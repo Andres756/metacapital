@@ -12,6 +12,34 @@ function requireLogin(): void {
         header('Location: /login.php');
         exit;
     }
+
+    // ── Revertir acuerdos vencidos a mora ────────────────────
+    // Solo una vez por día por sesión para no golpear la BD en cada request
+    $hoy = date('Y-m-d');
+    if (($_SESSION['ultima_revision_acuerdos'] ?? '') !== $hoy) {
+        $cobro = cobroActivo();
+        if ($cobro > 0) {
+            try {
+                $db = getDB();
+                $db->prepare("
+                    UPDATE prestamos
+                    SET estado       = 'en_mora',
+                        nota_acuerdo = CONCAT(
+                            COALESCE(nota_acuerdo, ''),
+                            ' [Acuerdo vencido sin pago — ', ?, ']'
+                        ),
+                        updated_at   = NOW()
+                    WHERE cobro_id         = ?
+                      AND estado           = 'en_acuerdo'
+                      AND fecha_compromiso IS NOT NULL
+                      AND fecha_compromiso < ?
+                ")->execute([$hoy, $cobro, $hoy]);
+            } catch (Exception $e) {
+                // Silencioso — no interrumpir navegación si falla
+            }
+        }
+        $_SESSION['ultima_revision_acuerdos'] = $hoy;
+    }
 }
 
 function requireRole(array $roles): void {

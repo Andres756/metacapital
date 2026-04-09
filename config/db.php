@@ -1,9 +1,10 @@
 <?php
 define('DB_HOST', 'localhost');
-define('DB_NAME', 'meta_capital');
+define('DB_NAME', 'meta_capital_v2');
 define('DB_USER', 'root');
 define('DB_PASS', '');
 define('DB_CHARSET', 'utf8mb4');
+define('GOOGLE_MAPS_KEY', 'AIzaSyD8u1fYmZJp6a6-XiGzuXKEYGRoh13KyJg');
 
 date_default_timezone_set('America/Bogota');
 

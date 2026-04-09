@@ -21,6 +21,7 @@ $pageSection = $pageSection ?? '';
   <script>
     var BASE_URL = '<?= rtrim(dirname(dirname($_SERVER['SCRIPT_NAME'])), '/\\') ?>';
   </script>
+  <script src="https://maps.googleapis.com/maps/api/js?key=<?= GOOGLE_MAPS_KEY ?>&libraries=places&language=es&region=CO" async defer></script>
 </head>
 <body>
 <div class="layout">

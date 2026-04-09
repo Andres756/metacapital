@@ -3,7 +3,6 @@ require_once __DIR__ . '/../config/auth.php';
 requireLogin();
 header('Content-Type: application/json');
 
-// Solo superadmin puede gestionar usuarios
 if ($_SESSION['rol'] !== 'superadmin') {
     echo json_encode(['ok'=>false,'msg'=>'Sin permiso']); exit;
 }
@@ -17,7 +16,9 @@ $db     = getDB();
 $cobro  = cobroActivo();
 $action = $data['action'] ?? '';
 
-// ---- CREAR USUARIO ----
+// ============================================================
+// CREAR USUARIO
+// ============================================================
 if ($action === 'crear') {
     $nombre = trim($data['nombre'] ?? '');
     $email  = trim($data['email']  ?? '');
@@ -35,7 +36,6 @@ if ($action === 'crear') {
         echo json_encode(['ok'=>false,'msg'=>'La contraseña debe tener al menos 6 caracteres']); exit;
     }
 
-    // Verificar email único
     $check = $db->prepare("SELECT id FROM usuarios WHERE email=?");
     $check->execute([$email]);
     if ($check->fetch()) {
@@ -46,26 +46,49 @@ if ($action === 'crear') {
     try {
         $db->prepare("INSERT INTO usuarios (nombre, email, password_hash, rol) VALUES (?,?,?,?)")
            ->execute([$nombre, $email, password_hash($pass, PASSWORD_DEFAULT), $rol]);
-        $uid = $db->lastInsertId();
+        $uid = (int)$db->lastInsertId();
 
-        // Asignar al cobro activo si se marcó
         if (!empty($data['asignar_cobro']) && $cobro) {
-            $db->prepare("INSERT INTO usuario_cobro
-                (usuario_id, cobro_id, puede_ver, puede_registrar_pago,
-                 puede_ver_dashboard, puede_ver_deudores, puede_ver_prestamos, puede_ver_pagos,
-                 puede_ver_proyeccion, puede_ver_reportes)
-                VALUES (?,?,1,1,1,1,1,1,1,1)")
-               ->execute([$uid, $cobro]);
+            // FIX: permisos base según rol al asignar al cobro
+            $esCobrador = in_array($rol, ['cobrador','consulta']);
+            $esAdmin    = in_array($rol, ['admin','superadmin']);
+
+            $db->prepare("INSERT INTO usuario_cobro (
+                usuario_id, cobro_id,
+                puede_ver, puede_registrar_pago,
+                puede_ver_dashboard, puede_ver_deudores, puede_ver_prestamos,
+                puede_ver_pagos, puede_ver_proyeccion, puede_ver_reportes,
+                puede_crear_deudor, puede_editar_deudor,
+                puede_crear_prestamo, puede_editar_prestamo,
+                puede_crear_salida, puede_ver_salidas,
+                puede_ver_movimientos, puede_ver_cuentas,
+                puede_ver_configuracion, puede_exportar
+            ) VALUES (?,?,1,?,1,1,1,1,1,?,?,?,?,?,?,1,1,1,?,?)")
+               ->execute([
+                   $uid, $cobro,
+                   $esCobrador ? 1 : 1,          // puede_registrar_pago
+                   $esAdmin    ? 1 : 0,           // puede_ver_reportes completo
+                   $esCobrador ? 1 : 1,           // puede_crear_deudor
+                   $esCobrador ? 1 : 1,           // puede_editar_deudor
+                   $esCobrador ? 1 : 1,           // puede_crear_prestamo
+                   $esCobrador ? 1 : 1,           // puede_editar_prestamo
+                   $esCobrador ? 1 : 1,           // puede_crear_salida
+                   $esAdmin    ? 1 : 0,           // puede_ver_configuracion
+                   $esAdmin    ? 1 : 0,           // puede_exportar
+               ]);
         }
 
         $db->commit();
         echo json_encode(['ok'=>true,'msg'=>'Usuario creado correctamente','id'=>$uid]);
+
     } catch (Exception $e) {
         $db->rollBack();
         echo json_encode(['ok'=>false,'msg'=>'Error: '.$e->getMessage()]);
     }
 
-// ---- EDITAR USUARIO ----
+// ============================================================
+// EDITAR USUARIO
+// ============================================================
 } elseif ($action === 'editar') {
     $id     = (int)($data['id'] ?? 0);
     $nombre = trim($data['nombre'] ?? '');
@@ -81,7 +104,19 @@ if ($action === 'crear') {
         echo json_encode(['ok'=>false,'msg'=>'Email inválido']); exit;
     }
 
-    // Verificar email único (excluyendo el mismo usuario)
+    // FIX: verificar que el usuario existe
+    $chkU = $db->prepare("SELECT id, rol FROM usuarios WHERE id=?");
+    $chkU->execute([$id]);
+    $usuarioActual = $chkU->fetch();
+    if (!$usuarioActual) {
+        echo json_encode(['ok'=>false,'msg'=>'Usuario no encontrado']); exit;
+    }
+
+    // FIX: no permitir cambiar el propio rol
+    if ($id === (int)$_SESSION['usuario_id'] && $rol !== $_SESSION['rol']) {
+        echo json_encode(['ok'=>false,'msg'=>'No puedes cambiar tu propio rol']); exit;
+    }
+
     $check = $db->prepare("SELECT id FROM usuarios WHERE email=? AND id!=?");
     $check->execute([$email, $id]);
     if ($check->fetch()) {
@@ -100,7 +135,9 @@ if ($action === 'crear') {
     }
     echo json_encode(['ok'=>true,'msg'=>'Usuario actualizado']);
 
-// ---- PERMISOS ----
+// ============================================================
+// PERMISOS
+// ============================================================
 } elseif ($action === 'permisos') {
     $uid      = (int)($data['usuario_id'] ?? 0);
     $cobro_id = (int)($data['cobro_id']   ?? $cobro);
@@ -109,7 +146,19 @@ if ($action === 'crear') {
         echo json_encode(['ok'=>false,'msg'=>'Datos incompletos']); exit;
     }
 
-    // ── Permisos legacy ──────────────────────────────────────────
+    // FIX: verificar que usuario y cobro existen
+    $chkU = $db->prepare("SELECT id FROM usuarios WHERE id=? AND activo=1");
+    $chkU->execute([$uid]);
+    if (!$chkU->fetch()) {
+        echo json_encode(['ok'=>false,'msg'=>'Usuario no encontrado o inactivo']); exit;
+    }
+
+    $chkC = $db->prepare("SELECT id FROM cobros WHERE id=? AND activo=1");
+    $chkC->execute([$cobro_id]);
+    if (!$chkC->fetch()) {
+        echo json_encode(['ok'=>false,'msg'=>'Cobro no encontrado']); exit;
+    }
+
     $perms = [
         'puede_ver'            => (int)($data['puede_ver']            ?? 0),
         'puede_crear'          => (int)($data['puede_crear']          ?? 0),
@@ -117,7 +166,6 @@ if ($action === 'crear') {
         'puede_eliminar'       => (int)($data['puede_eliminar']       ?? 0),
         'puede_ver_capital'    => (int)($data['puede_ver_capital']    ?? 0),
         'puede_registrar_pago' => (int)($data['puede_registrar_pago'] ?? 0),
-        // ── Vistas ───────────────────────────────────────────────
         'puede_ver_dashboard'     => (int)($data['puede_ver_dashboard']     ?? 0),
         'puede_ver_deudores'      => (int)($data['puede_ver_deudores']      ?? 0),
         'puede_ver_prestamos'     => (int)($data['puede_ver_prestamos']     ?? 0),
@@ -130,28 +178,21 @@ if ($action === 'crear') {
         'puede_ver_configuracion' => (int)($data['puede_ver_configuracion'] ?? 0),
         'puede_ver_usuarios'      => (int)($data['puede_ver_usuarios']      ?? 0),
         'puede_ver_cobros'        => (int)($data['puede_ver_cobros']        ?? 0),
-        // ── Deudores ─────────────────────────────────────────────
         'puede_crear_deudor'    => (int)($data['puede_crear_deudor']    ?? 0),
         'puede_editar_deudor'   => (int)($data['puede_editar_deudor']   ?? 0),
         'puede_eliminar_deudor' => (int)($data['puede_eliminar_deudor'] ?? 0),
-        // ── Préstamos ────────────────────────────────────────────
         'puede_crear_prestamo'  => (int)($data['puede_crear_prestamo']  ?? 0),
         'puede_editar_prestamo' => (int)($data['puede_editar_prestamo'] ?? 0),
         'puede_anular_prestamo' => (int)($data['puede_anular_prestamo'] ?? 0),
-        // ── Pagos ────────────────────────────────────────────────
         'puede_anular_pago'     => (int)($data['puede_anular_pago']     ?? 0),
-        // ── Capital ──────────────────────────────────────────────
-        'puede_crear_capitalista'           => (int)($data['puede_crear_capitalista']           ?? 0),
-        'puede_editar_capitalista'          => (int)($data['puede_editar_capitalista']          ?? 0),
-        'puede_registrar_movimiento_capital'=> (int)($data['puede_registrar_movimiento_capital']?? 0),
-        'puede_ver_historial_capitalista'   => (int)($data['puede_ver_historial_capitalista']   ?? 0),
-        // ── Cuentas ──────────────────────────────────────────────
+        'puede_crear_capitalista'            => (int)($data['puede_crear_capitalista']            ?? 0),
+        'puede_editar_capitalista'           => (int)($data['puede_editar_capitalista']           ?? 0),
+        'puede_registrar_movimiento_capital' => (int)($data['puede_registrar_movimiento_capital'] ?? 0),
+        'puede_ver_historial_capitalista'    => (int)($data['puede_ver_historial_capitalista']    ?? 0),
         'puede_crear_cuenta'    => (int)($data['puede_crear_cuenta']    ?? 0),
         'puede_editar_cuenta'   => (int)($data['puede_editar_cuenta']   ?? 0),
-        // ── Salidas ──────────────────────────────────────────────
         'puede_crear_salida'    => (int)($data['puede_crear_salida']    ?? 0),
         'puede_eliminar_salida' => (int)($data['puede_eliminar_salida'] ?? 0),
-        // ── Sistema ──────────────────────────────────────────────
         'puede_exportar'        => (int)($data['puede_exportar']        ?? 0),
     ];
 
@@ -159,7 +200,6 @@ if ($action === 'crear') {
     $setStr = implode(', ', array_map(fn($k) => "$k=?", array_keys($perms)));
     $vals   = array_values($perms);
 
-    // INSERT OR UPDATE
     $check = $db->prepare("SELECT id FROM usuario_cobro WHERE usuario_id=? AND cobro_id=?");
     $check->execute([$uid, $cobro_id]);
 
@@ -173,15 +213,20 @@ if ($action === 'crear') {
     }
     echo json_encode(['ok'=>true,'msg'=>'Permisos actualizados']);
 
-// ---- ACTIVAR / DESACTIVAR ----
+// ============================================================
+// ACTIVAR / DESACTIVAR
+// ============================================================
 } elseif (in_array($action, ['activar','desactivar'])) {
     $id = (int)($data['id'] ?? 0);
     if (!$id) { echo json_encode(['ok'=>false,'msg'=>'ID inválido']); exit; }
-    if ($id == $_SESSION['usuario_id']) {
+
+    if ($id === (int)$_SESSION['usuario_id']) {
         echo json_encode(['ok'=>false,'msg'=>'No puedes desactivarte a ti mismo']); exit;
     }
+
     $activo = $action === 'activar' ? 1 : 0;
-    $db->prepare("UPDATE usuarios SET activo=?, updated_at=NOW() WHERE id=?")->execute([$activo, $id]);
+    $db->prepare("UPDATE usuarios SET activo=?, updated_at=NOW() WHERE id=?")
+       ->execute([$activo, $id]);
     echo json_encode(['ok'=>true,'msg'=>$activo ? 'Usuario activado' : 'Usuario desactivado']);
 
 } else {

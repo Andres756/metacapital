@@ -99,7 +99,8 @@ require_once __DIR__ . '/../includes/header.php';
     <button class="btn btn-success" onclick="openModal('modal-pago')">💰 Registrar Pago</button>
     <?php endif; ?>
     <?php if (canDo('puede_editar_prestamo') && in_array($p['estado'],['activo','en_mora','en_acuerdo'])): ?>
-    <button class="btn btn-warning" onclick="openModal('modal-gestionar')">⚠ Gestionar</button>
+    <button class="btn btn-primary" onclick="openModal('modal-renovar')">🔄 Renovar</button>
+    <button class="btn btn-warning" onclick="openModal('modal-acuerdo')">📋 Acuerdo de pago</button>
     <?php endif; ?>
     <?php if (canDo('puede_editar_prestamo') && $p['estado'] !== 'anulado' && $p['estado'] !== 'pagado' && !$tienePagos): ?>
     <button class="btn btn-info" onclick="openModal('modal-editar-prestamo')">✏ Editar</button>
@@ -367,123 +368,178 @@ require_once __DIR__ . '/../includes/header.php';
   </div>
 </div>
 
-<!-- ====== MODAL GESTIONAR MORA ====== -->
-<div class="modal-overlay" id="modal-gestionar">
-  <div class="modal modal-lg">
+<!-- ====== MODAL RENOVAR ====== -->
+<div class="modal-overlay" id="modal-renovar">
+  <div class="modal" style="max-width:560px">
     <div class="modal-header">
-      <h2>GESTIONAR PRÉSTAMO</h2>
-      <button class="modal-close" onclick="closeModal('modal-gestionar')">✕</button>
+      <h2>RENOVAR PRÉSTAMO #<?= $p['id'] ?></h2>
+      <button class="modal-close" onclick="closeModal('modal-renovar')">✕</button>
     </div>
     <div class="modal-body">
-      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:1rem;margin-bottom:1.5rem">
-        <div class="stat-card" style="cursor:pointer;border-color:var(--accent)" onclick="setAccion('renovar')">
-          <div class="stat-label">🔄 Renovar</div>
-          <div style="font-size:0.75rem;color:var(--text-soft);margin-top:0.35rem;font-family:var(--font-mono)">
-            Paga intereses, capital se reinicia
-          </div>
-        </div>
-        <div class="stat-card orange" style="cursor:pointer" onclick="setAccion('refinanciar')">
-          <div class="stat-label">⚠ Refinanciar</div>
-          <div style="font-size:0.75rem;color:var(--text-soft);margin-top:0.35rem;font-family:var(--font-mono)">
-            No pagó nada, capitalizar mora
-          </div>
-        </div>
-        <div class="stat-card blue" style="cursor:pointer" onclick="setAccion('acuerdo')">
-          <div class="stat-label">📋 Acuerdo</div>
-          <div style="font-size:0.75rem;color:var(--text-soft);margin-top:0.35rem;font-family:var(--font-mono)">
-            Da plazo, registra compromiso
-          </div>
-        </div>
-      </div>
+      <form id="form-renovar">
+        <input type="hidden" name="prestamo_id" value="<?= $p['id'] ?>">
 
-      <form id="form-gestionar">
-        <input type="hidden" name="prestamo_id" value="<?= $id ?>">
-        <input type="hidden" name="action" id="g-accion" value="">
-
-        <!-- RENOVAR -->
-        <div id="panel-renovar" style="display:none">
-          <div class="alert alert-success mb-2">
-            Capital: <strong><?= fmt($p['monto_prestado']) ?></strong> · Interés a cobrar: <strong><?= fmt($p['interes_calculado']) ?></strong>
+        <!-- Info de referencia -->
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0.75rem;margin-bottom:1.25rem">
+          <div style="padding:0.75rem;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);text-align:center">
+            <div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:0.25rem">Saldo pendiente</div>
+            <div style="font-weight:700;color:var(--warn);font-size:1rem"><?= fmt($p['saldo_pendiente']) ?></div>
           </div>
-          <div class="form-grid">
-            <div class="field">
-              <label>Monto interés recibido</label>
-              <input type="number" name="monto_intereses" value="<?= $p['interes_calculado'] ?>" step="1000" oninput="calcPreviewRenovar()">
+          <div style="padding:0.75rem;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);text-align:center">
+            <div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:0.25rem">Monto original</div>
+            <div style="font-weight:700;font-size:1rem"><?= fmt($p['monto_prestado']) ?></div>
+          </div>
+          <div style="padding:0.75rem;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);text-align:center">
+            <div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:0.25rem">Sale de caja</div>
+            <div style="font-weight:700;font-size:1rem;color:var(--danger)" id="ren-diferencia-display">—</div>
+          </div>
+        </div>
+
+        <div class="form-grid">
+          <!-- Monto -->
+          <div class="field">
+            <label>Monto de renovación <span class="required">*</span></label>
+            <input type="number" id="ren-monto" name="monto_renovacion"
+                   value="<?= max($p['monto_prestado'], $p['saldo_pendiente']) ?>"
+                   min="<?= $p['saldo_pendiente'] ?>"
+                   step="1000" oninput="calcRenovacion()" required>
+            <div style="font-size:0.68rem;color:var(--muted);margin-top:0.25rem;font-family:var(--font-mono)">
+              Mínimo: <?= fmt($p['saldo_pendiente']) ?>
             </div>
-            <div class="field">
-              <label>Cuenta donde entró</label>
-              <select name="cuenta_id_renovar">
-                <?php foreach ($cuentas as $c): ?><option value="<?=$c['id']?>"><?=htmlspecialchars($c['nombre'])?></option><?php endforeach; ?>
+          </div>
+
+          <!-- Cuenta -->
+          <div class="field">
+            <label>Cuenta <span class="required">*</span></label>
+            <select id="ren-cuenta" name="cuenta_id_renovar" required>
+              <option value="">— Seleccionar —</option>
+              <?php foreach ($cuentas as $c): ?>
+              <option value="<?= $c['id'] ?>"
+                <?= $c['id'] == $p['cuenta_desembolso_id'] ? 'selected' : '' ?>>
+                <?= htmlspecialchars($c['nombre']) ?>
+              </option>
+              <?php endforeach; ?>
+            </select>
+          </div>
+
+          <!-- Tipo interés -->
+          <div class="field">
+            <label id="ren-label-interes">Interés (%)</label>
+            <div style="display:flex;gap:0.5rem">
+              <select id="ren-tipo-int" name="tipo_interes" onchange="calcRenovacion()" style="width:130px;flex-shrink:0">
+                <option value="porcentaje" <?= $p['tipo_interes']==='porcentaje'?'selected':'' ?>>% Porcentaje</option>
+                <option value="valor_fijo" <?= $p['tipo_interes']==='valor_fijo'?'selected':'' ?>>$ Valor fijo</option>
               </select>
-            </div>
-            <div class="field">
-              <label>Nuevo % interés (siguiente período)</label>
-              <input type="number" name="nuevo_interes" value="<?= $p['interes_valor'] ?>" step="1" oninput="calcPreviewRenovar()">
-            </div>
-            <div class="field">
-              <label>Nuevas cuotas</label>
-              <input type="number" name="nuevas_cuotas" value="<?= $p['num_cuotas'] ?>" min="1" oninput="calcPreviewRenovar()">
+              <input type="number" id="ren-interes" name="interes_valor"
+                     value="<?= $p['interes_valor'] ?>" step="0.5" min="0"
+                     oninput="calcRenovacion()" style="flex:1">
             </div>
           </div>
-          <div id="preview-renovar" style="display:none;margin-top:0.75rem;padding:0.85rem 1rem;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);font-family:var(--font-mono);font-size:0.75rem;line-height:1.8"></div>
-        </div>
 
-        <!-- REFINANCIAR -->
-        <div id="panel-refinanciar" style="display:none">
-          <div class="alert alert-warning mb-2">
-            Saldo actual: <strong><?= fmt($p['saldo_pendiente']) ?></strong>
+          <!-- Cuotas -->
+          <div class="field">
+            <label>Número de cuotas</label>
+            <input type="number" id="ren-cuotas" name="num_cuotas"
+                   value="<?= $p['num_cuotas'] ?>" min="1" oninput="calcRenovacion()">
           </div>
-          <div class="form-grid">
-            <div class="field">
-              <label>Nuevo capital base</label>
-              <input type="number" name="nuevo_capital" value="<?= $p['saldo_pendiente'] ?>" step="1000" oninput="calcRefin()">
-            </div>
-            <div class="field">
-              <label>Nuevo % interés</label>
-              <input type="number" name="nuevo_interes_r" value="<?= $p['interes_valor'] ?>" step="1" oninput="calcRefin()">
-            </div>
-            <div class="field">
-              <label>Abono del cliente ($)</label>
-              <input type="number" name="abono_cliente" value="0" step="1000" oninput="calcRefin()">
-            </div>
-            <div class="field">
-              <label>Cuenta abono</label>
-              <select name="cuenta_id_refin">
-                <option value="">— Sin abono —</option>
-                <?php foreach ($cuentas as $c): ?><option value="<?=$c['id']?>"><?=htmlspecialchars($c['nombre'])?></option><?php endforeach; ?>
-              </select>
-            </div>
-            <div class="field">
-              <label>Nuevas cuotas</label>
-              <input type="number" name="nuevas_cuotas_r" value="1" min="1">
-            </div>
-          </div>
-          <div id="preview-refin" style="margin-top:0.75rem;font-family:var(--font-mono);font-size:0.75rem;color:var(--accent);display:none"></div>
-        </div>
 
-        <!-- ACUERDO -->
-        <div id="panel-acuerdo" style="display:none">
-          <div class="form-grid">
-            <div class="field">
-              <label>Fecha compromiso</label>
-              <input type="date" name="fecha_compromiso" value="<?= date('Y-m-d', strtotime('+7 days')) ?>">
-            </div>
-            <div class="field field-span2">
-              <label>Nota del acuerdo <span class="required">*</span></label>
-              <input type="text" name="nota_acuerdo" placeholder="Ej: Llama el viernes, paga el lunes...">
-            </div>
+          <!-- Frecuencia -->
+          <div class="field">
+            <label>Frecuencia de pago</label>
+            <select id="ren-frecuencia" name="frecuencia_pago" onchange="onRenFrecuenciaChange()">
+              <option value="diario"    <?= $p['frecuencia_pago']==='diario'   ?'selected':'' ?>>Diario</option>
+              <option value="semanal"   <?= $p['frecuencia_pago']==='semanal'  ?'selected':'' ?>>Semanal</option>
+              <option value="quincenal" <?= $p['frecuencia_pago']==='quincenal'?'selected':'' ?>>Quincenal</option>
+              <option value="mensual"   <?= $p['frecuencia_pago']==='mensual'  ?'selected':'' ?>>Mensual</option>
+            </select>
+          </div>
+
+          <!-- Omitir domingos -->
+          <div class="field" id="ren-domingo-wrap"
+               style="display:<?= $p['frecuencia_pago']==='diario'?'flex':'none' ?>;align-items:center;padding-top:1.5rem">
+            <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;font-weight:normal;margin:0">
+              <input type="checkbox" id="ren-domingos" name="omitir_domingos" value="1"
+                     <?= $p['omitir_domingos'] ? 'checked' : '' ?>>
+              Omitir domingos
+            </label>
+          </div>
+
+          <!-- Nota -->
+          <div class="field field-span2">
+            <label>Nota <span style="color:var(--muted);font-weight:400">(opcional)</span></label>
+            <input type="text" name="nota_gestion" placeholder="Ej: Cliente solicita más plazo">
           </div>
         </div>
 
-        <div class="field mt-2" id="campo-nota-gestion">
-          <label>Nota de gestión</label>
-          <textarea name="nota_gestion" placeholder="Descripción de lo acordado..."></textarea>
+        <!-- Preview en vivo -->
+        <div id="ren-preview" style="display:none;margin-top:0.75rem;padding:0.85rem 1rem;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius)">
+          <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:0.5rem;text-align:center;font-size:0.78rem">
+            <div>
+              <div style="font-family:var(--font-mono);font-size:0.6rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px">Interés</div>
+              <div style="font-weight:700" id="ren-prev-interes">—</div>
+            </div>
+            <div>
+              <div style="font-family:var(--font-mono);font-size:0.6rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px">Total</div>
+              <div style="font-weight:700" id="ren-prev-total">—</div>
+            </div>
+            <div>
+              <div style="font-family:var(--font-mono);font-size:0.6rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px">Valor cuota</div>
+              <div style="font-weight:700;color:var(--accent)" id="ren-prev-cuota">—</div>
+            </div>
+            <div>
+              <div style="font-family:var(--font-mono);font-size:0.6rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px">Fecha fin</div>
+              <div style="font-weight:700" id="ren-prev-fecha">—</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Aviso sin pagos -->
+        <div id="ren-aviso-sinpagos" style="display:none;margin-top:0.75rem;padding:0.75rem;background:rgba(245,158,11,0.1);border:1px solid rgba(245,158,11,0.4);border-radius:var(--radius);font-size:0.78rem;color:#d97706">
+          ⚠ Este préstamo no tiene pagos registrados. El plazo venció el
+          <strong><?= $p['fecha_fin_esperada'] ? date('d/m/Y', strtotime($p['fecha_fin_esperada'])) : '—' ?></strong>.
+          Al guardar se te pedirá confirmación.
+        </div>
+
+      </form>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('modal-renovar')">Cancelar</button>
+      <button class="btn btn-primary" id="btn-renovar" onclick="guardarRenovacion()">RENOVAR PRÉSTAMO</button>
+    </div>
+  </div>
+</div>
+
+<!-- ====== MODAL ACUERDO DE PAGO ====== -->
+<div class="modal-overlay" id="modal-acuerdo">
+  <div class="modal" style="max-width:420px">
+    <div class="modal-header">
+      <h2>ACUERDO DE PAGO</h2>
+      <button class="modal-close" onclick="closeModal('modal-acuerdo')">✕</button>
+    </div>
+    <div class="modal-body">
+      <form id="form-acuerdo">
+        <input type="hidden" name="prestamo_id" value="<?= $p['id'] ?>">
+        <div class="form-grid">
+          <div class="field field-span2">
+            <label>Nota del acuerdo <span class="required">*</span></label>
+            <input type="text" name="nota_acuerdo" required
+                   placeholder="Ej: Llama el viernes, paga el lunes...">
+          </div>
+          <div class="field">
+            <label>Fecha compromiso</label>
+            <input type="date" name="fecha_compromiso"
+                   value="<?= date('Y-m-d', strtotime('+7 days')) ?>">
+          </div>
+          <div class="field field-span2">
+            <label>Nota de gestión <span style="color:var(--muted);font-weight:400">(opcional)</span></label>
+            <textarea name="nota_gestion" placeholder="Descripción adicional..." style="min-height:60px"></textarea>
+          </div>
         </div>
       </form>
     </div>
     <div class="modal-footer">
-      <button class="btn btn-ghost" onclick="closeModal('modal-gestionar')">Cancelar</button>
-      <button class="btn btn-primary" id="btn-gestionar" onclick="ejecutarGestion()" disabled>CONFIRMAR</button>
+      <button class="btn btn-ghost" onclick="closeModal('modal-acuerdo')">Cancelar</button>
+      <button class="btn btn-warning" onclick="guardarAcuerdo()">REGISTRAR ACUERDO</button>
     </div>
   </div>
 </div>
@@ -661,66 +717,6 @@ async function registrarPago() {
     else toast(res.msg || 'Error', 'error');
 }
 
-function setAccion(accion) {
-    document.getElementById('g-accion').value = accion;
-    ['renovar','refinanciar','acuerdo'].forEach(function(a) {
-        document.getElementById('panel-'+a).style.display = a===accion ? 'block' : 'none';
-    });
-    document.getElementById('btn-gestionar').disabled = false;
-    if (accion === 'renovar') calcPreviewRenovar();
-}
-
-function calcPreviewRenovar() {
-    var saldo     = <?= $p['saldo_pendiente'] ?>;
-    var intPagado = parseFloat(document.querySelector('[name=monto_intereses]').value) || 0;
-    var nuevoCap  = Math.max(0, saldo - intPagado);
-    var pct       = parseFloat(document.querySelector('[name=nuevo_interes]').value) || 0;
-    var cuotas    = parseInt(document.querySelector('[name=nuevas_cuotas]').value) || 1;
-    var intCalc   = nuevoCap * pct / 100;
-    var total     = nuevoCap + intCalc;
-    var valCuota  = total / cuotas;
-
-    var prev = document.getElementById('preview-renovar');
-    if (!prev) return;
-    prev.style.display = 'block';
-    prev.innerHTML =
-        'Saldo actual: <strong>' + fmt(saldo) + '</strong> · ' +
-        'Interés que paga: <strong style="color:var(--accent)">-' + fmt(intPagado) + '</strong><br>' +
-        'Nuevo capital: <strong style="color:var(--accent)">' + fmt(nuevoCap) + '</strong> · ' +
-        'Nuevo interés (' + pct + '%): +' + fmt(intCalc) + '<br>' +
-        'Nuevo total: <strong>' + fmt(total) + '</strong> · ' +
-        cuotas + ' cuotas de <strong>' + fmt(valCuota) + '</strong>';
-}
-
-function calcRefin() {
-    var cap    = parseFloat(document.querySelector('[name=nuevo_capital]').value) || 0;
-    var pct    = parseFloat(document.querySelector('[name=nuevo_interes_r]').value) || 0;
-    var abono  = parseFloat(document.querySelector('[name=abono_cliente]').value) || 0;
-    var base   = Math.max(0, cap - abono);
-    var interes= base * pct / 100;
-    var total  = base + interes;
-    var p = document.getElementById('preview-refin');
-    p.style.display = 'block';
-    p.innerHTML = 'Nuevo capital: ' + fmt(base) + ' + Interes: ' + fmt(interes) + ' = <strong>Total: ' + fmt(total) + '</strong>';
-}
-
-async function ejecutarGestion() {
-    var btn  = document.getElementById('btn-gestionar');
-    var data = Object.fromEntries(new FormData(document.getElementById('form-gestionar')));
-    if (!data.action) { toast('Selecciona una accion', 'error'); return; }
-    btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> Procesando...';
-    var res = await apiPost('/api/prestamos.php', data);
-    btn.disabled = false; btn.innerHTML = 'CONFIRMAR';
-    if (res.ok) {
-        toast(res.msg || 'Operacion exitosa');
-        closeModal('modal-gestionar');
-        setTimeout(function() {
-            if (res.nuevo_id) window.location = '/pages/prestamo_detalle.php?id=' + res.nuevo_id;
-            else location.reload();
-        }, 800);
-    } else toast(res.msg || 'Error', 'error');
-}
-
 async function guardarGestionRapida() {
     var data = Object.fromEntries(new FormData(document.getElementById('form-gestion-rapida')));
     if (!data.nota || !data.nota.trim()) { toast('La nota es obligatoria', 'error'); return; }
@@ -728,4 +724,136 @@ async function guardarGestionRapida() {
     if (res.ok) { toast('Gestion registrada'); closeModal('modal-gestion'); setTimeout(function(){ location.reload(); }, 800); }
     else toast(res.msg || 'Error', 'error');
 }
+
+// ── Constantes del préstamo actual ───────────────────────────
+const REN_SALDO      = <?= (float)$p['saldo_pendiente'] ?>;
+const REN_TIENE_PAGOS= <?= count($pagos) > 0 ? 'true' : 'false' ?>;
+
+function onRenFrecuenciaChange() {
+    const freq = document.getElementById('ren-frecuencia').value;
+    const wrap = document.getElementById('ren-domingo-wrap');
+    wrap.style.display = freq === 'diario' ? 'flex' : 'none';
+    if (freq !== 'diario') document.getElementById('ren-domingos').checked = false;
+    calcRenovacion();
+}
+
+function calcRenovacion() {
+    const monto   = parseFloat(document.getElementById('ren-monto').value)   || 0;
+    const tipoInt = document.getElementById('ren-tipo-int').value;
+    const intVal  = parseFloat(document.getElementById('ren-interes').value)  || 0;
+    const cuotas  = parseInt(document.getElementById('ren-cuotas').value)     || 1;
+    const freq    = document.getElementById('ren-frecuencia').value;
+
+    // Label interés
+    document.getElementById('ren-label-interes').textContent =
+        tipoInt === 'porcentaje' ? 'Interés (%)' : 'Interés ($ valor fijo total)';
+
+    // Diferencia
+    const dif    = monto - REN_SALDO;
+    const divDif = document.getElementById('ren-diferencia-display');
+    if (!monto) { divDif.textContent = '—'; divDif.style.color = ''; }
+    else if (Math.abs(dif) < 1) { divDif.textContent = '$0 sin movimiento'; divDif.style.color = 'var(--muted)'; }
+    else { divDif.textContent = '- ' + fmt(dif) + ' sale de caja'; divDif.style.color = 'var(--danger)'; }
+
+    // Aviso sin pagos
+    document.getElementById('ren-aviso-sinpagos').style.display =
+        !REN_TIENE_PAGOS ? 'block' : 'none';
+
+    if (monto < REN_SALDO) {
+        document.getElementById('ren-preview').style.display = 'none';
+        return;
+    }
+
+    // Preview
+    const intCalc = tipoInt === 'porcentaje' ? monto * (intVal / 100) : intVal;
+    const total   = monto + intCalc;
+    const valCuota= cuotas > 0 ? Math.round(total / cuotas) : total;
+    const diasMap = {diario:1, semanal:7, quincenal:15, mensual:30};
+    const fechaFin= new Date();
+    fechaFin.setDate(fechaFin.getDate() + (diasMap[freq] || 30) * cuotas);
+
+    document.getElementById('ren-prev-interes').textContent = fmt(intCalc);
+    document.getElementById('ren-prev-total').textContent   = fmt(total);
+    document.getElementById('ren-prev-cuota').textContent   = fmt(valCuota) + ' × ' + cuotas;
+    document.getElementById('ren-prev-fecha').textContent   =
+        fechaFin.toLocaleDateString('es-CO',{day:'2-digit',month:'short',year:'numeric'});
+    document.getElementById('ren-preview').style.display = 'block';
+}
+
+async function guardarRenovacion() {
+    const monto          = parseFloat(document.getElementById('ren-monto').value) || 0;
+    const cuenta         = document.getElementById('ren-cuenta').value;
+    const MONTO_ORIGINAL = <?= (float)$p['monto_prestado'] ?>;
+
+    if (!monto || monto <= 0) { toast('Ingresa el monto de renovación', 'error'); return; }
+    if (monto < REN_SALDO)    { toast('El monto no puede ser menor al saldo pendiente (' + fmt(REN_SALDO) + ')', 'error'); return; }
+    if (!cuenta)              { toast('Selecciona una cuenta', 'error'); return; }
+
+    // Advertencia: sin pagos y plazo vencido
+    if (!REN_TIENE_PAGOS) {
+        const ok = confirm(
+            '⚠ Este préstamo no tiene pagos registrados y el plazo ya venció.\n' +
+            '¿Confirmas que deseas renovarlo?'
+        );
+        if (!ok) return;
+    }
+
+    // Advertencia: monto supera el préstamo original (saldo en mora acumulado)
+    if (monto > MONTO_ORIGINAL) {
+        const ok = confirm(
+            '⚠ El monto de renovación (' + fmt(monto) + ') es mayor al préstamo original (' + fmt(MONTO_ORIGINAL) + ').\n\n' +
+            'Esto ocurre porque el saldo pendiente superó el monto inicial, posiblemente por cuotas en mora acumuladas.\n\n' +
+            '¿Confirmas que deseas renovar por este valor?'
+        );
+        if (!ok) return;
+    }
+
+    // Confirmación: sale dinero de caja
+    const dif = monto - REN_SALDO;
+    if (dif > 0) {
+        const ok = confirm(
+            'Se registrará una salida de caja de ' + fmt(dif) + '.\n' +
+            '¿El cobrador entregó ese dinero al deudor?'
+        );
+        if (!ok) return;
+    }
+
+    const btn = document.getElementById('btn-renovar');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> Procesando...';
+
+    const data = Object.fromEntries(new FormData(document.getElementById('form-renovar')));
+    data.action = 'renovar';
+
+    const res = await apiPost('/api/prestamos.php', data);
+    btn.disabled = false;
+    btn.innerHTML = 'RENOVAR PRÉSTAMO';
+
+    if (res.ok) {
+        toast(res.msg, 'success');
+        setTimeout(() => window.location = '/pages/prestamo_detalle.php?id=' + res.nuevo_id, 1200);
+    } else {
+        toast(res.msg || 'Error al renovar', 'error');
+    }
+}
+
+async function guardarAcuerdo() {
+    const form  = document.getElementById('form-acuerdo');
+    const data  = Object.fromEntries(new FormData(form));
+    const nota  = (data.nota_acuerdo || '').trim();
+    if (!nota) { toast('La nota del acuerdo es obligatoria', 'error'); return; }
+
+    data.action = 'acuerdo';
+    const res = await apiPost('/api/prestamos.php', data);
+    if (res.ok) {
+        toast(res.msg, 'success');
+        closeModal('modal-acuerdo');
+        setTimeout(() => location.reload(), 900);
+    } else {
+        toast(res.msg || 'Error', 'error');
+    }
+}
+
+// Inicializar preview al cargar
+document.addEventListener('DOMContentLoaded', () => calcRenovacion());
 </script>

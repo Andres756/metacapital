@@ -363,8 +363,9 @@ require_once __DIR__ . '/../includes/header.php';
 </div>
 
 <!-- Modal editar deudor (reutiliza datos) -->
+<!-- Modal editar deudor -->
 <div class="modal-overlay" id="modal-editar">
-  <div class="modal">
+  <div class="modal" style="max-width:640px">
     <div class="modal-header">
       <h2>EDITAR DEUDOR</h2>
       <button class="modal-close" onclick="closeModal('modal-editar')">✕</button>
@@ -393,10 +394,30 @@ require_once __DIR__ . '/../includes/header.php';
             <label>Barrio</label>
             <input type="text" name="barrio" value="<?= htmlspecialchars($deudor['barrio']??'') ?>">
           </div>
+
           <div class="field field-span2">
             <label>Dirección</label>
-            <input type="text" name="direccion" value="<?= htmlspecialchars($deudor['direccion']??'') ?>">
+            <input type="text" id="det_direccion" name="direccion"
+                   value="<?= htmlspecialchars($deudor['direccion']??'') ?>"
+                   placeholder="Escribe la dirección para buscar..."
+                   autocomplete="off">
+            <input type="hidden" id="det_lat"      name="lat"      value="<?= htmlspecialchars($deudor['lat']??'') ?>">
+            <input type="hidden" id="det_lng"      name="lng"      value="<?= htmlspecialchars($deudor['lng']??'') ?>">
+            <input type="hidden" id="det_place_id" name="place_id" value="<?= htmlspecialchars($deudor['place_id']??'') ?>">
           </div>
+        </div>
+
+        <!-- Mapa fuera del form-grid -->
+        <div id="mapa-det-wrap" style="display:<?= ($deudor['lat'] && $deudor['lng']) ? 'block' : 'none' ?>;margin-bottom:1rem">
+          <div id="mapa-detalle"
+               style="width:100%;height:240px;border-radius:var(--radius);border:1px solid var(--border);overflow:hidden;min-height:240px">
+          </div>
+          <div style="font-size:0.72rem;color:var(--muted);margin-top:0.4rem;font-family:var(--font-mono)">
+            📍 Arrastra el pin si la ubicación no es exacta
+          </div>
+        </div>
+
+        <div class="form-grid">
           <div class="field">
             <label>Comportamiento</label>
             <select name="comportamiento">
@@ -422,6 +443,83 @@ require_once __DIR__ . '/../includes/header.php';
 <?php
 $extraScript = <<<JS
 <script>
+// ── Mapa del detalle del deudor ───────────────────────────────
+let mapaDetInstance   = null;
+let markerDetInstance = null;
+let autocompleteDetInstance = null;
+
+function initMapaDetalle() {
+    if (mapaDetInstance) return;
+
+    const lat = parseFloat(document.getElementById('det_lat').value) || 5.5353;
+    const lng = parseFloat(document.getElementById('det_lng').value) || -73.3678;
+    const centro = { lat, lng };
+
+    mapaDetInstance = new google.maps.Map(document.getElementById('mapa-detalle'), {
+        center            : centro,
+        zoom              : lat === 5.5353 ? 6 : 17,
+        mapTypeControl    : false,
+        streetViewControl : false,
+        fullscreenControl : false,
+    });
+
+    markerDetInstance = new google.maps.Marker({
+        position : centro,
+        map      : mapaDetInstance,
+        draggable: true,
+        title    : 'Arrastra para ajustar la ubicación',
+    });
+
+    markerDetInstance.addListener('dragend', function () {
+        const pos = markerDetInstance.getPosition();
+        document.getElementById('det_lat').value      = pos.lat().toFixed(7);
+        document.getElementById('det_lng').value      = pos.lng().toFixed(7);
+        document.getElementById('det_place_id').value = '';
+    });
+
+    autocompleteDetInstance = new google.maps.places.Autocomplete(
+        document.getElementById('det_direccion'),
+        {
+            componentRestrictions: { country: 'co' },
+            fields: ['geometry', 'formatted_address', 'place_id'],
+        }
+    );
+
+    autocompleteDetInstance.addListener('place_changed', function () {
+        const place = autocompleteDetInstance.getPlace();
+        if (!place.geometry || !place.geometry.location) return;
+
+        const lat = place.geometry.location.lat();
+        const lng = place.geometry.location.lng();
+
+        document.getElementById('det_lat').value      = lat.toFixed(7);
+        document.getElementById('det_lng').value      = lng.toFixed(7);
+        document.getElementById('det_place_id').value = place.place_id || '';
+
+        const pos = new google.maps.LatLng(lat, lng);
+        mapaDetInstance.setCenter(pos);
+        mapaDetInstance.setZoom(17);
+        markerDetInstance.setPosition(pos);
+
+        document.getElementById('mapa-det-wrap').style.display = 'block';
+        setTimeout(() => google.maps.event.trigger(mapaDetInstance, 'resize'), 100);
+    });
+}
+
+// Inicializar mapa cuando se abre el modal editar
+document.querySelector('[onclick="openModal(\'modal-editar\')"]')
+    ?.addEventListener('click', () => {
+        setTimeout(() => {
+            if (typeof google === 'undefined') return;
+            document.getElementById('mapa-det-wrap').style.display = 'block';
+            if (!mapaDetInstance) {
+                initMapaDetalle();
+            } else {
+                google.maps.event.trigger(mapaDetInstance, 'resize');
+            }
+        }, 300);
+    });
+
 async function guardarGestion(e) {
     e.preventDefault();
     const data = Object.fromEntries(new FormData(document.getElementById('form-gestion')));
@@ -430,6 +528,7 @@ async function guardarGestion(e) {
     if (res.ok) { toast('Gestión registrada'); closeModal('modal-gestion'); setTimeout(()=>location.reload(),800); }
     else toast(res.msg || 'Error', 'error');
 }
+
 async function guardarEdicion(e) {
     e.preventDefault();
     const data = Object.fromEntries(new FormData(document.getElementById('form-editar')));

@@ -260,8 +260,23 @@ require_once __DIR__ . '/../includes/header.php';
             <input type="text" id="d_barrio" name="barrio" placeholder="Barrio o sector">
           </div>
           <div class="field field-span2">
-            <label>Dirección</label>
-            <input type="text" id="d_direccion" name="direccion" placeholder="Dirección completa">
+              <label>Dirección</label>
+              <input type="text" id="d_direccion" name="direccion"
+                    placeholder="Escribe la dirección para buscar..."
+                    autocomplete="off">
+              <input type="hidden" id="d_lat"      name="lat">
+              <input type="hidden" id="d_lng"      name="lng">
+              <input type="hidden" id="d_place_id" name="place_id">
+          </div>
+
+          <!-- Mini mapa con pin draggable -->
+          <div class="field field-span2" id="mapa-wrap" style="display:none">
+              <div id="mapa-deudor"
+                  style="width:100%;height:220px;border-radius:var(--radius);border:1px solid var(--border);overflow:hidden">
+              </div>
+              <div style="font-size:0.72rem;color:var(--muted);margin-top:0.4rem;font-family:var(--font-mono)">
+                  📍 Arrastra el pin si la ubicación no es exacta
+              </div>
           </div>
         </div>
 
@@ -345,12 +360,39 @@ function editarDeudor(d) {
     document.getElementById('d_comportamiento').value = d.comportamiento || 'bueno';
     document.getElementById('d_notas').value        = d.notas || '';
 
-    // Marcar checkboxes de cobros
     document.querySelectorAll('input[name="cobros[]"]').forEach(cb => {
         cb.checked = d.cobros_ids && d.cobros_ids.includes(parseInt(cb.value));
     });
 
+    // ── Ubicación GPS ─────────────────────────────────────────
+    document.getElementById('d_lat').value      = d.lat || '';
+    document.getElementById('d_lng').value      = d.lng || '';
+    document.getElementById('d_place_id').value = d.place_id || '';
+
+    document.getElementById('mapa-wrap').style.display = 'block';
+
     openModal('modal-deudor');
+
+    setTimeout(() => {
+        if (typeof google === 'undefined') return;
+
+        if (!mapaInstance) {
+            initMapaDeudor();
+        } else {
+            google.maps.event.trigger(mapaInstance, 'resize');
+        }
+
+        if (d.lat && d.lng) {
+            const pos = new google.maps.LatLng(parseFloat(d.lat), parseFloat(d.lng));
+            mapaInstance.setCenter(pos);
+            mapaInstance.setZoom(17);
+            markerInstance.setPosition(pos);
+        } else {
+            mapaInstance.setCenter({ lat: 4.5709, lng: -74.2973 });
+            mapaInstance.setZoom(6);
+        }
+    }, 300);
+    // ──────────────────────────────────────────────────────────
 }
 
 async function guardarDeudor(e) {
@@ -381,7 +423,6 @@ async function guardarDeudor(e) {
     }
 }
 
-// Limpiar modal al abrir nuevo
 document.querySelector('[onclick="openModal(\'modal-deudor\')"]')?.addEventListener('click', () => {
     document.getElementById('modal-deudor-title').textContent = 'NUEVO DEUDOR';
     document.getElementById('form-deudor').reset();
@@ -391,6 +432,95 @@ document.querySelector('[onclick="openModal(\'modal-deudor\')"]')?.addEventListe
         cb.checked = cb.dataset.current === '1';
     });
 });
+
+
+let mapaInstance   = null;
+let markerInstance = null;
+let autocompleteInstance = null;
+
+function initMapaDeudor() {
+    // Evitar doble inicialización
+    if (mapaInstance) return;
+
+    const centro = { lat: 5.5353, lng: -73.3678 }; // Tunja por defecto
+
+    mapaInstance = new google.maps.Map(document.getElementById('mapa-deudor'), {
+        center         : centro,
+        zoom           : 15,
+        mapTypeControl : false,
+        streetViewControl: false,
+        fullscreenControl: false,
+    });
+
+    markerInstance = new google.maps.Marker({
+        position : centro,
+        map      : mapaInstance,
+        draggable: true,
+        title    : 'Arrastra para ajustar la ubicación',
+    });
+
+    // Cuando el pin se arrastra → actualizar lat/lng
+    markerInstance.addListener('dragend', function () {
+        const pos = markerInstance.getPosition();
+        document.getElementById('d_lat').value = pos.lat().toFixed(7);
+        document.getElementById('d_lng').value = pos.lng().toFixed(7);
+        document.getElementById('d_place_id').value = ''; // ya no es el place_id original
+    });
+
+    // Autocomplete en el campo de dirección
+    autocompleteInstance = new google.maps.places.Autocomplete(
+        document.getElementById('d_direccion'),
+        {
+            componentRestrictions: { country: 'co' },
+            fields: ['geometry', 'formatted_address', 'place_id'],
+        }
+    );
+
+    autocompleteInstance.addListener('place_changed', function () {
+        const place = autocompleteInstance.getPlace();
+        if (!place.geometry || !place.geometry.location) return;
+
+        const lat = place.geometry.location.lat();
+        const lng = place.geometry.location.lng();
+
+        // Actualizar campos ocultos
+        document.getElementById('d_lat').value      = lat.toFixed(7);
+        document.getElementById('d_lng').value      = lng.toFixed(7);
+        document.getElementById('d_place_id').value = place.place_id || '';
+
+        // Mover mapa y pin
+        const pos = new google.maps.LatLng(lat, lng);
+        mapaInstance.setCenter(pos);
+        mapaInstance.setZoom(17);
+        markerInstance.setPosition(pos);
+
+        // Mostrar el mapa si estaba oculto
+        document.getElementById('mapa-wrap').style.display = 'block';
+
+        // Pequeño delay para que el mapa redibuje bien
+        setTimeout(() => google.maps.event.trigger(mapaInstance, 'resize'), 100);
+    });
+}
+
+function mostrarMapaConUbicacion(lat, lng) {
+    document.getElementById('mapa-wrap').style.display = 'block';
+    setTimeout(() => {
+        initMapaDeudor();
+        const pos = new google.maps.LatLng(parseFloat(lat), parseFloat(lng));
+        mapaInstance.setCenter(pos);
+        mapaInstance.setZoom(17);
+        markerInstance.setPosition(pos);
+        google.maps.event.trigger(mapaInstance, 'resize');
+    }, 150);
+}
+
+
+document.querySelector('[onclick="openModal(\'modal-deudor\')"]')
+    ?.addEventListener('click', () => {
+        setTimeout(() => {
+            if (typeof google !== 'undefined') initMapaDeudor();
+        }, 300);
+    });
 </script>
 JS;
 require_once __DIR__ . '/../includes/footer.php';
