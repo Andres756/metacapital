@@ -3,8 +3,8 @@ require_once __DIR__ . '/../config/auth.php';
 requireLogin();
 
 // Solo cobradores — admins van al sistema principal
-if (!in_array($_SESSION['rol'], ['cobrador'])) {
-    header('Location: /pages/dashboard.php'); exit;
+if (!in_array($_SESSION['rol'], ['cobrador', 'admin', 'superadmin'])) {
+    header('Location: /login.php'); exit;
 }
 
 $cobro = cobroActivo();

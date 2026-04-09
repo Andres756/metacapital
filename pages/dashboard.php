@@ -4,6 +4,17 @@ requireLogin();
 
 $db    = getDB();
 $cobro = cobroActivo();
+// Alertas de clavos consultados
+$stmtAlertas = $db->prepare("
+    SELECT a.*, u.nombre AS cobrador, d.nombre AS deudor_nombre
+    FROM alertas_admin a
+    LEFT JOIN usuarios u ON u.id = a.usuario_id
+    LEFT JOIN deudores d ON d.id = a.deudor_id
+    WHERE a.cobro_id=? AND a.leida=0
+    ORDER BY a.created_at DESC
+");
+$stmtAlertas->execute([$cobro]);
+$alertasAdmin = $stmtAlertas->fetchAll();
 
 // ── Vista cobrador (sin puede_ver_dashboard) ─────────────────
 if (!canDo('puede_ver_dashboard')) {
@@ -525,6 +536,18 @@ require_once __DIR__ . '/../includes/header.php';
 </div>
 
 <!-- ALERTAS -->
+<?php if (!empty($alertasAdmin)): ?>
+<div class="alert alert-danger mb-2" style="cursor:pointer" onclick="marcarAlertasLeidas()">
+    🚨 <?= count($alertasAdmin) ?> alerta<?= count($alertasAdmin) > 1 ? 's' : '' ?> de deudor<?= count($alertasAdmin) > 1 ? 'es' : '' ?> CLAVO consultado<?= count($alertasAdmin) > 1 ? 's' : '' ?>:
+    <?php foreach($alertasAdmin as $a): ?>
+    <div style="font-size:0.8rem;margin-top:4px">
+        · <?= htmlspecialchars($a['mensaje']) ?> — <?= date('d M H:i', strtotime($a['created_at'])) ?>
+    </div>
+    <?php endforeach; ?>
+    <div style="font-size:0.72rem;margin-top:6px;opacity:0.7">Toca para marcar como leídas</div>
+</div>
+<?php endif; ?>
+
 <?php if (!empty($reditosPend)): ?>
 <div class="alert alert-warning mb-2">
   ⚠ Tienes <?= count($reditosPend) ?> rédito(s) pendientes de pagar a capitalistas.
@@ -728,6 +751,15 @@ async function anularPagoDash(pagoId, deudor) {
     const res = await apiPost('/api/pagos.php', { action: 'anular', pago_id: pagoId });
     if (res.ok) { toast(res.msg, 'success'); setTimeout(() => location.reload(), 1200); }
     else toast(res.msg || 'Error al anular pago', 'error');
+}
+
+async function marcarAlertasLeidas() {
+    await fetch('/api/alertas.php', {
+        method : 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body   : JSON.stringify({ action: 'marcar_leidas', cobro_id: <?= $cobro ?> })
+    });
+    location.reload();
 }
 </script>
 

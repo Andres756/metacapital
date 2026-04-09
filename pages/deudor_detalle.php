@@ -423,7 +423,7 @@ require_once __DIR__ . '/../includes/header.php';
             <select name="comportamiento">
               <option value="bueno"   <?= $deudor['comportamiento']==='bueno'   ?'selected':'' ?>>Bueno</option>
               <option value="regular" <?= $deudor['comportamiento']==='regular' ?'selected':'' ?>>Regular</option>
-              <option value="malo"    <?= $deudor['comportamiento']==='malo'    ?'selected':'' ?>>Malo</option>
+              <option value="clavo" <?= $deudor['comportamiento']==='clavo' ?'selected':'' ?>>Clavo</option>
             </select>
           </div>
           <div class="field field-span2">

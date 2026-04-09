@@ -46,6 +46,10 @@ function validarSaldoCuenta(PDO $db, int $cuenta_id, int $cobro_id, float $monto
         echo json_encode(['ok'=>false,'msg'=>'Cuenta no encontrada']); exit;
     }
     $saldo = getSaldoCuenta($db, $cuenta_id, $cobro_id);
+    
+    // DEBUG TEMPORAL — quitar después
+    error_log("validarSaldoCuenta: cuenta_id=$cuenta_id cobro_id=$cobro_id saldo=$saldo monto=$monto");
+    
     if ($saldo < $monto) {
         echo json_encode([
             'ok'  => false,

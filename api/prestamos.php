@@ -2,6 +2,8 @@
 require_once __DIR__ . '/../config/auth.php';
 requireLogin();
 header('Content-Type: application/json');
+error_reporting(0);
+ini_set('display_errors', 0);
 
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     echo json_encode(['ok'=>false,'msg'=>'Método no permitido']); exit;
@@ -11,6 +13,17 @@ $data  = json_decode(file_get_contents('php://input'), true) ?? [];
 $db    = getDB();
 $cobro = cobroActivo();
 $action= $data['action'] ?? '';
+
+// ============================================================
+// HELPER — verificar si deudor es clavo
+// ============================================================
+function esClavo(PDO $db, int $deudor_id): ?string {
+    if (!$deudor_id) return null;
+    $stmt = $db->prepare("SELECT nombre FROM deudores WHERE id=? AND comportamiento='clavo'");
+    $stmt->execute([$deudor_id]);
+    $row = $stmt->fetch();
+    return $row ? $row['nombre'] : null;
+}
 
 // ============================================================
 // CREAR PRÉSTAMO
@@ -30,27 +43,24 @@ if ($action === 'crear') {
         echo json_encode(['ok'=>false,'msg'=>'Datos incompletos']); exit;
     }
 
-    // Cuenta obligatoria
+    // Verificar clavo
+    $nombreClavo = esClavo($db, $deudor_id);
+    if ($nombreClavo) {
+        echo json_encode(['ok'=>false,'msg'=>"No se puede crear un préstamo a $nombreClavo — está marcado como CLAVO."]); exit;
+    }
+
     $cuenta_desembolso_id = (int)($data['cuenta_desembolso_id'] ?? 0);
     if (!$cuenta_desembolso_id) {
         echo json_encode(['ok'=>false,'msg'=>'Debes seleccionar una cuenta de desembolso']); exit;
     }
 
-    // Verificar saldo suficiente en la cuenta física
     validarSaldoCuenta($db, $cuenta_desembolso_id, $cobro, $monto);
 
-    // El préstamo se valida contra la CAJA (capital global)
-    // El capitalista es solo referencia de origen, no limita el monto
-
-
-
-    // Calcular interés y total
     $interes_calc = $tipo_int === 'porcentaje'
         ? $monto * ($interes_val / 100)
         : (float)$interes_val;
     $total = $monto + $interes_calc;
 
-    // Valor cuota: si el usuario la sobreescribió, recalcular cuotas
     if (!empty($data['valor_cuota_override']) && (float)$data['valor_cuota_override'] > 0) {
         $valor_cuota = (float)$data['valor_cuota_override'];
         $num_cuotas  = max(1, (int)ceil($total / $valor_cuota));
@@ -58,14 +68,12 @@ if ($action === 'crear') {
         $valor_cuota = round($total / $num_cuotas, 2);
     }
 
-    // Fecha fin
     $diasMap = ['diario'=>1,'semanal'=>7,'quincenal'=>15,'mensual'=>30];
     $dias    = $diasMap[$frecuencia] ?? 30;
     $fechaFin= (new DateTime($fecha_ini))->modify("+".($dias * $num_cuotas)." days")->format('Y-m-d');
 
     $db->beginTransaction();
     try {
-        // Insertar préstamo
         $db->prepare("
             INSERT INTO prestamos
               (cobro_id, deudor_id, capitalista_id, monto_prestado, tipo_interes, interes_valor,
@@ -75,7 +83,7 @@ if ($action === 'crear') {
             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         ")->execute([
             $cobro, $deudor_id,
-            ($data['capitalista_id'] ?: null),
+            ($data['capitalista_id'] ?? null) ?: null,
             $monto, $tipo_int, $interes_val, $interes_calc, $total,
             $frecuencia, $num_cuotas, $valor_cuota,
             $fecha_ini, $fechaFin,
@@ -86,26 +94,21 @@ if ($action === 'crear') {
             !empty($data['omitir_domingos']) ? 1 : 0,
             $_SESSION['usuario_id']
         ]);
-        $prestamo_id = $db->lastInsertId();
+        $prestamo_id     = $db->lastInsertId();
         $omitir_domingos = !empty($data['omitir_domingos']);
 
-        // Generar cuotas
         generarCuotas($db, $prestamo_id, $cobro, $fecha_ini, $frecuencia, $num_cuotas, $valor_cuota, $total, $omitir_domingos);
 
-        // Movimiento: prestamo (salida de cuenta)
         $db->prepare("INSERT INTO capital_movimientos
                 (cobro_id, tipo, es_entrada, monto, cuenta_id, capitalista_id, prestamo_id, descripcion, fecha, usuario_id)
                 VALUES (?, 'prestamo', 0, ?, ?, ?, ?, ?, ?, ?)")->execute([
             $cobro, $monto, $cuenta_desembolso_id,
-            ($data['capitalista_id'] ?: null),
+            ($data['capitalista_id'] ?? null) ?: null,
             $prestamo_id,
             "Préstamo #$prestamo_id a deudor #$deudor_id",
             $fecha_ini, $_SESSION['usuario_id']
         ]);
 
-        // Descuento informativo por capitalista:
-        // 1. Propios: se gastan primero, por orden de mayor saldo disponible
-        // 2. Prestados: proporcional a su aporte histórico, solo si quedan fondos
         $capsQ = $db->prepare("
             SELECT c.id, c.tipo,
                 COALESCE(SUM(CASE WHEN m.es_entrada=1 AND m.tipo!='prestamo_proporcional' THEN m.monto ELSE 0 END),0) AS total_aporte,
@@ -123,8 +126,6 @@ if ($action === 'crear') {
         $prestados  = array_filter($capsData, fn($c) => $c['tipo'] === 'prestado');
 
         $montoRestante = (float)$monto;
-
-        // 1. Agotar propios primero (mayor saldo primero)
         foreach ($propios as $cap) {
             if ($montoRestante <= 0) break;
             $descuento = min($montoRestante, (float)$cap['saldo_actual']);
@@ -141,7 +142,6 @@ if ($action === 'crear') {
             ]);
         }
 
-        // 2. Si queda monto, repartir entre prestados proporcional a aporte
         if ($montoRestante > 0 && count($prestados) > 0) {
             $totalAportesPrest = array_sum(array_column(array_values($prestados), 'total_aporte'));
             $lastPrest = array_values($prestados);
@@ -180,20 +180,19 @@ if ($action === 'crear') {
 } elseif ($action === 'pagar') {
     if (!canDo('puede_registrar_pago')) { echo json_encode(['ok'=>false,'msg'=>'Sin permiso']); exit; }
 
-    $prestamo_id = (int)($data['prestamo_id'] ?? 0);
-    $cuota_id    = (int)($data['cuota_id']    ?? 0);
-    $monto       = (float)($data['monto_pagado'] ?? 0);
-    $fecha_pago  = $data['fecha_pago'] ?? date('Y-m-d');
+    $prestamo_id    = (int)($data['prestamo_id'] ?? 0);
+    $cuota_id       = (int)($data['cuota_id']    ?? 0);
+    $monto          = (float)($data['monto_pagado'] ?? 0);
+    $fecha_pago     = $data['fecha_pago'] ?? date('Y-m-d');
+    $cuenta_id_pago = (int)($data['cuenta_id'] ?? 0);
 
     if (!$prestamo_id || !$cuota_id || $monto <= 0) {
         echo json_encode(['ok'=>false,'msg'=>'Datos incompletos']); exit;
     }
-    $cuenta_id_pago = (int)($data['cuenta_id'] ?? 0);
     if (!$cuenta_id_pago) {
         echo json_encode(['ok'=>false,'msg'=>'Selecciona la cuenta donde entró el dinero']); exit;
     }
 
-    // Verificar préstamo y cuota
     $stmtP = $db->prepare("SELECT * FROM prestamos WHERE id=? AND cobro_id=?");
     $stmtP->execute([$prestamo_id, $cobro]);
     $prestamo = $stmtP->fetch();
@@ -206,18 +205,16 @@ if ($action === 'crear') {
 
     $db->beginTransaction();
     try {
-        $excedente = 0;
-        $msg_extra = '';
+        $excedente     = 0;
+        $msg_extra     = '';
         $monto_aplicar = $monto;
 
-        // ── Aplicar pago a cuota actual ──────────────────────
         $monto_pagado_nuevo = $cuota['monto_pagado'] + $monto_aplicar;
         $saldo_cuota_nuevo  = $cuota['monto_cuota'] - $monto_pagado_nuevo;
 
         if ($saldo_cuota_nuevo < 0) {
-            // Hay excedente
-            $excedente         = abs($saldo_cuota_nuevo);
-            $monto_aplicar     = $cuota['monto_cuota'] - $cuota['monto_pagado']; // solo lo que faltaba
+            $excedente          = abs($saldo_cuota_nuevo);
+            $monto_aplicar      = $cuota['monto_cuota'] - $cuota['monto_pagado'];
             $monto_pagado_nuevo = $cuota['monto_cuota'];
             $saldo_cuota_nuevo  = 0;
         }
@@ -227,7 +224,6 @@ if ($action === 'crear') {
         $db->prepare("UPDATE cuotas SET monto_pagado=?, saldo_cuota=?, estado=?, fecha_pago=?, updated_at=NOW() WHERE id=?")
            ->execute([$monto_pagado_nuevo, $saldo_cuota_nuevo, $estado_cuota, $fecha_pago, $cuota_id]);
 
-        // Registrar pago cuota actual
         $db->prepare("INSERT INTO pagos (cobro_id,prestamo_id,cuota_id,deudor_id,monto_pagado,fecha_pago,cuenta_id,metodo_pago,es_parcial,observacion,usuario_id)
             VALUES (?,?,?,?,?,?,?,?,?,?,?)")->execute([
             $cobro, $prestamo_id, $cuota_id, $prestamo['deudor_id'],
@@ -238,18 +234,15 @@ if ($action === 'crear') {
             $data['observacion'] ?? null,
             $_SESSION['usuario_id']
         ]);
-        // Capturar ID del pago principal ANTES de los inserts de excedente
         $pago_id_principal = $db->lastInsertId();
 
-        // ── Aplicar excedente en cascada a cuotas siguientes ──────────────
         if ($excedente > 0) {
-            $saldoExcedente = $excedente;
+            $saldoExcedente  = $excedente;
             $cuotasAplicadas = [];
 
-            // Traer todas las cuotas pendientes siguientes ordenadas
             $sigQ = $db->prepare("
                 SELECT * FROM cuotas
-                WHERE prestamo_id=? AND estado IN ('pendiente','parcial','vencido')
+                WHERE prestamo_id=? AND estado IN ('pendiente','parcial')
                 AND id != ?
                 ORDER BY numero_cuota ASC
             ");
@@ -258,18 +251,13 @@ if ($action === 'crear') {
 
             foreach ($cuotasSig as $sc) {
                 if ($saldoExcedente <= 0) break;
-
-                $saldoPendienteCuota = $sc['saldo_cuota'];
-                $aplicar = min($saldoExcedente, $saldoPendienteCuota);
+                $aplicar = min($saldoExcedente, $sc['saldo_cuota']);
                 $saldoExcedente -= $aplicar;
-
                 $mp2  = $sc['monto_pagado'] + $aplicar;
                 $sc2  = max(0, $sc['saldo_cuota'] - $aplicar);
                 $est2 = $sc2 <= 0 ? 'pagado' : 'parcial';
-
                 $db->prepare("UPDATE cuotas SET monto_pagado=?, saldo_cuota=?, estado=?, fecha_pago=?, updated_at=NOW() WHERE id=?")
                    ->execute([$mp2, $sc2, $est2, ($sc2<=0 ? $fecha_pago : null), $sc['id']]);
-
                 $db->prepare("INSERT INTO pagos (cobro_id,prestamo_id,cuota_id,deudor_id,monto_pagado,fecha_pago,cuenta_id,metodo_pago,es_parcial,observacion,usuario_id)
                     VALUES (?,?,?,?,?,?,?,?,?,?,?)")->execute([
                     $cobro, $prestamo_id, $sc['id'], $prestamo['deudor_id'],
@@ -280,7 +268,6 @@ if ($action === 'crear') {
                     'Excedente de cuota #'.$cuota['numero_cuota'],
                     $_SESSION['usuario_id']
                 ]);
-
                 $cuotasAplicadas[] = $sc['numero_cuota'];
             }
 
@@ -288,7 +275,6 @@ if ($action === 'crear') {
                 $msg_extra = " Excedente aplicado a cuota(s) #".implode(', #', $cuotasAplicadas).".";
             }
 
-            // Si aún queda excedente → saldo a favor del deudor
             if ($saldoExcedente > 0) {
                 $db->prepare("UPDATE deudores SET saldo_favor = saldo_favor + ? WHERE id=?")
                    ->execute([$saldoExcedente, $prestamo['deudor_id']]);
@@ -296,68 +282,49 @@ if ($action === 'crear') {
             }
         }
 
-        // ── Actualizar saldo del préstamo ────────────────────
-        $nuevo_saldo = max(0, $prestamo['saldo_pendiente'] - $monto);
+        $nuevo_saldo  = max(0, $prestamo['saldo_pendiente'] - $monto);
         $nuevo_estado = $nuevo_saldo <= 0 ? 'pagado' : actualizarEstadoMora($db, $prestamo_id);
         $db->prepare("UPDATE prestamos SET saldo_pendiente=?, estado=?, updated_at=NOW() WHERE id=?")
            ->execute([$nuevo_saldo, $nuevo_estado, $prestamo_id]);
 
-        // ── Movimiento en capital (general) ─────────────────
         if (!empty($data['cuenta_id'])) {
             $db->prepare("INSERT INTO capital_movimientos
                     (cobro_id, tipo, es_entrada, monto, cuenta_id, capitalista_id, prestamo_id, pago_id, descripcion, fecha, usuario_id)
                     VALUES (?, 'cobro_cuota', 1, ?, ?, ?, ?, ?, ?, ?, ?)")->execute([
                 $cobro, $monto, (int)$data['cuenta_id'],
                 ($prestamo['capitalista_id'] ?: null),
-                $prestamo_id,
-                $pago_id_principal,
+                $prestamo_id, $pago_id_principal,
                 "Cobro cuota préstamo #$prestamo_id",
                 $fecha_pago, $_SESSION['usuario_id']
             ]);
         }
 
-        // ── Retorno proporcional a capitalistas ──────────────
-        // Buscar cómo se distribuyó el capital de este préstamo entre capitalistas
         $propQ = $db->prepare("
-            SELECT capitalista_id, monto
-            FROM capital_movimientos
+            SELECT capitalista_id, monto FROM capital_movimientos
             WHERE prestamo_id=? AND tipo='prestamo_proporcional' AND anulado=0 AND capitalista_id IS NOT NULL
         ");
         $propQ->execute([$prestamo_id]);
         $proporcionales = $propQ->fetchAll();
 
         if (!empty($proporcionales)) {
-            // Total que salió en proporcionales para calcular porcentajes
-            $totalProp = array_sum(array_column($proporcionales, 'monto'));
-
+            $totalProp    = array_sum(array_column($proporcionales, 'monto'));
             if ($totalProp > 0) {
-                $montoRetorno  = $monto; // El pago completo regresa proporcionalmente
-                $acumulado     = 0;
-                $lastIdx       = count($proporcionales) - 1;
-
+                $montoRetorno = $monto;
+                $acumulado    = 0;
+                $lastIdx      = count($proporcionales) - 1;
                 foreach ($proporcionales as $idx => $prop) {
-                    $pct        = $prop['monto'] / $totalProp;
-                    // Al último se le da el resto para evitar diferencias de redondeo
-                    $retorno    = ($idx === $lastIdx)
-                        ? ($montoRetorno - $acumulado)
-                        : round($montoRetorno * $pct);
+                    $pct     = $prop['monto'] / $totalProp;
+                    $retorno = ($idx === $lastIdx) ? ($montoRetorno - $acumulado) : round($montoRetorno * $pct);
                     if ($retorno <= 0) continue;
                     $acumulado += $retorno;
-                    $pctLabel   = round($pct * 100, 1);
-
                     $db->prepare("INSERT INTO capital_movimientos
                         (cobro_id, tipo, es_entrada, monto, cuenta_id, capitalista_id, prestamo_id, pago_id, descripcion, fecha, usuario_id)
-                        VALUES (?, 'cobro_proporcional', 1, ?, ?, ?, ?, ?, ?, ?, ?)"
-                    )->execute([
-                        $cobro,
-                        $retorno,
-                        (int)($data['cuenta_id'] ?? 0),
-                        $prop['capitalista_id'],
-                        $prestamo_id,
-                        $pago_id_principal,
-                        "Retorno préstamo #$prestamo_id — {$pctLabel}% capital",
-                        $fecha_pago,
-                        $_SESSION['usuario_id']
+                        VALUES (?, 'cobro_proporcional', 1, ?, ?, ?, ?, ?, ?, ?, ?)")
+                    ->execute([
+                        $cobro, $retorno, (int)($data['cuenta_id'] ?? 0),
+                        $prop['capitalista_id'], $prestamo_id, $pago_id_principal,
+                        "Retorno préstamo #$prestamo_id — ".round($pct*100,1)."% capital",
+                        $fecha_pago, $_SESSION['usuario_id']
                     ]);
                 }
             }
@@ -397,7 +364,6 @@ if ($action === 'crear') {
         echo json_encode(['ok'=>false,'msg'=>'Selecciona la cuenta para el desembolso']); exit;
     }
 
-    // Cargar préstamo
     $pQ = $db->prepare("SELECT * FROM prestamos WHERE id=? AND cobro_id=?");
     $pQ->execute([$prestamo_id, $cobro]);
     $prestamo = $pQ->fetch();
@@ -405,97 +371,72 @@ if ($action === 'crear') {
         echo json_encode(['ok'=>false,'msg'=>'Préstamo no encontrado']); exit;
     }
 
+    // FIX: obtener deudor_id del préstamo — no del $data
+    $nombreClavo = esClavo($db, (int)$prestamo['deudor_id']);
+    if ($nombreClavo) {
+        echo json_encode(['ok'=>false,'msg'=>"No se puede renovar el préstamo de $nombreClavo — está marcado como CLAVO."]); exit;
+    }
+
     $saldo_pendiente = (float)$prestamo['saldo_pendiente'];
 
-    // ── Validación 1: monto mínimo = saldo pendiente ──────────
     if ($monto_renovacion < $saldo_pendiente) {
         echo json_encode([
             'ok'  => false,
-            'msg' => 'El monto de renovación no puede ser menor al saldo pendiente ('
-                     . fmt($saldo_pendiente) . ')'
+            'msg' => 'El monto de renovación no puede ser menor al saldo pendiente (' . fmt($saldo_pendiente) . ')'
         ]); exit;
     }
 
-    // ── Validación 2: regla de pagos ──────────────────────────
     $pagosQ = $db->prepare("SELECT COUNT(*) FROM pagos WHERE prestamo_id=? AND anulado=0");
     $pagosQ->execute([$prestamo_id]);
     $tiene_pagos = (int)$pagosQ->fetchColumn() > 0;
 
     if (!$tiene_pagos) {
-        // Verificar si la última cuota ya venció
         $ultQ = $db->prepare("SELECT MAX(fecha_vencimiento) FROM cuotas WHERE prestamo_id=? AND estado != 'anulado'");
         $ultQ->execute([$prestamo_id]);
-        $ultima_fecha = $ultQ->fetchColumn();
+        $ultima_fecha   = $ultQ->fetchColumn();
         $ultima_vencida = $ultima_fecha && $ultima_fecha < date('Y-m-d');
-
         if (!$ultima_vencida) {
             echo json_encode([
                 'ok'  => false,
-                'msg' => 'No se puede renovar: el préstamo no tiene pagos y aún hay cuotas vigentes. '
-                        .'Solo se puede renovar sin pagos cuando el plazo completo ha vencido.'
+                'msg' => 'No se puede renovar: el préstamo no tiene pagos y aún hay cuotas vigentes.'
             ]); exit;
         }
-        // Si llegó acá: sin pagos pero última cuota vencida → permitido
-        // El frontend ya mostró la advertencia, el usuario confirmó
     }
 
-    // ── Validación 3: saldo en cuenta para la diferencia ─────
     $diferencia = $monto_renovacion - $saldo_pendiente;
     if ($diferencia > 0) {
         validarSaldoCuenta($db, $cuenta_id, $cobro, $diferencia);
     }
 
-    // ── Calcular nuevo préstamo ───────────────────────────────
     $interes_calc = $tipo_int === 'porcentaje'
         ? $monto_renovacion * ($interes_val / 100)
         : (float)$interes_val;
     $total_nuevo  = $monto_renovacion + $interes_calc;
     $valor_cuota  = round($total_nuevo / $nuevas_cuotas, 2);
-
-    $diasMap  = ['diario'=>1,'semanal'=>7,'quincenal'=>15,'mensual'=>30];
-    $dias     = $diasMap[$frecuencia] ?? 30;
-    $fechaFin = (new DateTime())->modify("+".($dias * $nuevas_cuotas)." days")->format('Y-m-d');
-
-    // ── tipo_origen automático ────────────────────────────────
-    $tipo_origen = $monto_renovacion > $saldo_pendiente ? 'refinanciacion' : 'renovacion';
+    $diasMap      = ['diario'=>1,'semanal'=>7,'quincenal'=>15,'mensual'=>30];
+    $dias         = $diasMap[$frecuencia] ?? 30;
+    $fechaFin     = (new DateTime())->modify("+".($dias * $nuevas_cuotas)." days")->format('Y-m-d');
+    $tipo_origen  = $monto_renovacion > $saldo_pendiente ? 'refinanciacion' : 'renovacion';
 
     $db->beginTransaction();
     try {
-
-        // 1. Cerrar préstamo viejo
-        $db->prepare("UPDATE prestamos
-            SET estado='renovado', saldo_pendiente=0, updated_at=NOW()
-            WHERE id=?")
+        $db->prepare("UPDATE prestamos SET estado='renovado', saldo_pendiente=0, updated_at=NOW() WHERE id=?")
+           ->execute([$prestamo_id]);
+        $db->prepare("UPDATE cuotas SET estado='pagado', updated_at=NOW() WHERE prestamo_id=? AND estado NOT IN ('pagado','anulado')")
            ->execute([$prestamo_id]);
 
-        $db->prepare("UPDATE cuotas
-            SET estado='pagado', updated_at=NOW()
-            WHERE prestamo_id=? AND estado NOT IN ('pagado','anulado')")
-           ->execute([$prestamo_id]);
-
-        // 2. Registrar diferencia en caja (solo si hay)
         if (abs($diferencia) >= 1) {
             $es_entrada  = $diferencia < 0 ? 1 : 0;
             $monto_mov   = round(abs($diferencia), 2);
             $descripcion = $diferencia > 0
                 ? "Diferencia renovación préstamo #$prestamo_id (cobrador entregó al deudor)"
                 : "Diferencia renovación préstamo #$prestamo_id (deudor entregó saldo)";
-
             $db->prepare("INSERT INTO capital_movimientos
-                (cobro_id, tipo, es_entrada, monto, cuenta_id, capitalista_id,
-                 prestamo_id, descripcion, fecha, usuario_id)
+                (cobro_id, tipo, es_entrada, monto, cuenta_id, capitalista_id, prestamo_id, descripcion, fecha, usuario_id)
                 VALUES (?, 'prestamo', ?, ?, ?, ?, ?, ?, CURDATE(), ?)")
-               ->execute([
-                   $cobro, $es_entrada, $monto_mov,
-                   $cuenta_id,
-                   $prestamo['capitalista_id'] ?: null,
-                   $prestamo_id,
-                   $descripcion,
-                   $_SESSION['usuario_id']
-               ]);
+               ->execute([$cobro, $es_entrada, $monto_mov, $cuenta_id, $prestamo['capitalista_id'] ?: null, $prestamo_id, $descripcion, $_SESSION['usuario_id']]);
         }
 
-        // 3. Crear préstamo nuevo
         $db->prepare("INSERT INTO prestamos
             (cobro_id, deudor_id, capitalista_id, monto_prestado, tipo_interes,
              interes_valor, interes_calculado, total_a_pagar, frecuencia_pago,
@@ -504,55 +445,27 @@ if ($action === 'crear') {
              prestamo_padre_id, omitir_domingos, usuario_id)
             VALUES (?,?,?,?,?,?,?,?,?,?,?,CURDATE(),?,?,?,?,?,?,?)")
            ->execute([
-               $cobro,
-               $prestamo['deudor_id'],
-               $prestamo['capitalista_id'],
-               $monto_renovacion,
-               $tipo_int,
-               $interes_val,
-               $interes_calc,
-               $total_nuevo,
-               $frecuencia,
-               $nuevas_cuotas,
-               $valor_cuota,
-               $fechaFin,
-               $cuenta_id,
-               $total_nuevo,
-               $tipo_origen,
-               $prestamo_id,
-               $omitir_domingos ? 1 : 0,
-               $_SESSION['usuario_id']
+               $cobro, $prestamo['deudor_id'], $prestamo['capitalista_id'],
+               $monto_renovacion, $tipo_int, $interes_val, $interes_calc, $total_nuevo,
+               $frecuencia, $nuevas_cuotas, $valor_cuota, $fechaFin, $cuenta_id,
+               $total_nuevo, $tipo_origen, $prestamo_id, $omitir_domingos ? 1 : 0, $_SESSION['usuario_id']
            ]);
         $nuevo_id = (int)$db->lastInsertId();
 
-        // 4. Generar cuotas del nuevo préstamo
-        generarCuotas($db, $nuevo_id, $cobro, date('Y-m-d'), $frecuencia,
-                      $nuevas_cuotas, $valor_cuota, $total_nuevo, $omitir_domingos);
+        generarCuotas($db, $nuevo_id, $cobro, date('Y-m-d'), $frecuencia, $nuevas_cuotas, $valor_cuota, $total_nuevo, $omitir_domingos);
 
-        // 5. Registrar gestión
         $nota_gestion = ucfirst($tipo_origen) . " por " . fmt($monto_renovacion) . ".";
-        if ($diferencia > 0) {
-            $nota_gestion .= " Cobrador entregó " . fmt($diferencia) . ".";
-        }
+        if ($diferencia > 0) $nota_gestion .= " Cobrador entregó " . fmt($diferencia) . ".";
         $nota_gestion .= " Nuevo préstamo #$nuevo_id.";
 
-        registrarGestion($db, $cobro, $prestamo_id, $prestamo['deudor_id'],
-                         'nota', $nota_gestion, $data['nota_gestion'] ?? null);
+        registrarGestion($db, $cobro, $prestamo_id, $prestamo['deudor_id'], 'nota', $nota_gestion, $data['nota_gestion'] ?? null);
 
         $db->commit();
 
         $msg = "Préstamo {$tipo_origen} exitosamente. Nuevo #$nuevo_id.";
-        if ($diferencia > 0) {
-            $msg .= " Salida de caja: " . fmt($diferencia) . ".";
-        }
+        if ($diferencia > 0) $msg .= " Salida de caja: " . fmt($diferencia) . ".";
 
-        echo json_encode([
-            'ok'         => true,
-            'msg'        => $msg,
-            'nuevo_id'   => $nuevo_id,
-            'diferencia' => $diferencia,
-            'tipo_origen'=> $tipo_origen
-        ]);
+        echo json_encode(['ok'=>true,'msg'=>$msg,'nuevo_id'=>$nuevo_id,'diferencia'=>$diferencia,'tipo_origen'=>$tipo_origen]);
 
     } catch (Exception $e) {
         $db->rollBack();
@@ -578,56 +491,30 @@ if ($action === 'crear') {
         echo json_encode(['ok'=>false,'msg'=>'La nota del acuerdo es obligatoria']); exit;
     }
 
-    // Validar fecha: debe ser hoy o futura
-    if ($fecha_compromiso) {
-        if (!strtotime($fecha_compromiso) || $fecha_compromiso < date('Y-m-d')) {
-            echo json_encode(['ok'=>false,'msg'=>'La fecha de compromiso debe ser hoy o una fecha futura']); exit;
-        }
+    if ($fecha_compromiso && (!strtotime($fecha_compromiso) || $fecha_compromiso < date('Y-m-d'))) {
+        echo json_encode(['ok'=>false,'msg'=>'La fecha de compromiso debe ser hoy o futura']); exit;
     }
 
-    // Cargar préstamo y validar que existe, pertenece al cobro y está en estado válido
     $pQ = $db->prepare("SELECT * FROM prestamos WHERE id=? AND cobro_id=?");
     $pQ->execute([$prestamo_id, $cobro]);
     $prestamo = $pQ->fetch();
-
     if (!$prestamo) {
         echo json_encode(['ok'=>false,'msg'=>'Préstamo no encontrado']); exit;
     }
 
-    $estados_validos = ['activo','en_mora','en_acuerdo'];
-    if (!in_array($prestamo['estado'], $estados_validos)) {
-        echo json_encode([
-            'ok'  => false,
-            'msg' => 'No se puede registrar un acuerdo en un préstamo con estado: ' . strtoupper($prestamo['estado'])
-        ]); exit;
+    if (!in_array($prestamo['estado'], ['activo','en_mora','en_acuerdo'])) {
+        echo json_encode(['ok'=>false,'msg'=>'Estado del préstamo no permite acuerdo']); exit;
     }
 
     try {
         $db->beginTransaction();
-
         $db->prepare("
             UPDATE prestamos
-            SET estado          = 'en_acuerdo',
-                nota_acuerdo    = ?,
-                fecha_acuerdo   = CURDATE(),
-                fecha_compromiso= ?,
-                updated_at      = NOW()
+            SET estado='en_acuerdo', nota_acuerdo=?, fecha_acuerdo=CURDATE(), fecha_compromiso=?, updated_at=NOW()
             WHERE id=? AND cobro_id=?
-        ")->execute([
-            $nota_acuerdo,
-            $fecha_compromiso ?: null,
-            $prestamo_id,
-            $cobro
-        ]);
+        ")->execute([$nota_acuerdo, $fecha_compromiso ?: null, $prestamo_id, $cobro]);
 
-        registrarGestion(
-            $db, $cobro,
-            $prestamo_id,
-            $prestamo['deudor_id'],
-            'acuerdo',
-            $nota_acuerdo,
-            $data['nota_gestion'] ?? null
-        );
+        registrarGestion($db, $cobro, $prestamo_id, $prestamo['deudor_id'], 'acuerdo', $nota_acuerdo, $data['nota_gestion'] ?? null);
 
         $db->commit();
         echo json_encode(['ok'=>true,'msg'=>'Acuerdo de pago registrado']);

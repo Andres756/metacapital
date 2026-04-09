@@ -183,7 +183,12 @@ require_once __DIR__ . '/../includes/header.php';
           <td>
             <?php
               $comp = $d['comportamiento'];
-              $compClass = $comp === 'bueno' ? 'badge-green' : ($comp === 'regular' ? 'badge-orange' : 'badge-red');
+              $compClass = match($comp) {
+                  'bueno'   => 'badge-green',
+                  'regular' => 'badge-orange',
+                  'clavo'   => 'badge-red',
+                  default   => 'badge-muted'
+              };
             ?>
             <span class="badge <?= $compClass ?>"><?= ucfirst($comp) ?></span>
           </td>
@@ -309,7 +314,7 @@ require_once __DIR__ . '/../includes/header.php';
             <select id="d_comportamiento" name="comportamiento">
               <option value="bueno">Bueno</option>
               <option value="regular">Regular</option>
-              <option value="malo">Malo</option>
+              <option value="clavo">Clavo</option>
             </select>
           </div>
           <div class="field field-span2">

@@ -8,9 +8,15 @@ if (isLoggedIn()) {
 
 // ── Función de redirección inteligente ───────────────────────
 function redirectPostLogin(): string {
+    // FIX: cobrador va a su portal móvil
+    if ($_SESSION['rol'] === 'cobrador') {
+        return '/cobrador/dashboard.php';
+    }
+
     if ($_SESSION['rol'] === 'superadmin' || $_SESSION['rol'] === 'admin') {
         return '/pages/dashboard.php';
     }
+
     // Redirigir al primer destino con permiso
     $mapa = [
         'puede_ver_dashboard'  => '/pages/dashboard.php',
