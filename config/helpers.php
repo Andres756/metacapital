@@ -10,18 +10,49 @@ function fmtFecha($fecha, string $formato = 'd M Y'): string {
 }
 
 /**
- * Saldo real de una cuenta = entradas - salidas en capital_movimientos
+ * Saldo real de caja — ya no depende de cuentas
  */
-function getSaldoCuenta(PDO $db, int $cuenta_id, int $cobro_id): float {
+function getSaldoCaja(PDO $db, int $cobro_id): float {
     $stmt = $db->prepare("
         SELECT COALESCE(SUM(CASE WHEN es_entrada=1 THEN monto ELSE -monto END), 0)
         FROM capital_movimientos
-        WHERE cuenta_id=? AND cobro_id=? 
-          AND tipo NOT IN ('prestamo_proporcional','cobro_proporcional')
-          AND anulado=0
+        WHERE cobro_id=? AND anulado=0
     ");
-    $stmt->execute([$cuenta_id, $cobro_id]);
+    $stmt->execute([$cobro_id]);
     return (float)$stmt->fetchColumn();
+}
+
+/**
+ * Desglose por método de pago (informativo)
+ */
+function getSaldoPorMetodo(PDO $db, int $cobro_id): array {
+    $stmt = $db->prepare("
+        SELECT metodo_pago,
+               COALESCE(SUM(CASE WHEN es_entrada=1 THEN monto ELSE -monto END), 0) AS saldo
+        FROM capital_movimientos
+        WHERE cobro_id=? AND anulado=0
+        GROUP BY metodo_pago
+    ");
+    $stmt->execute([$cobro_id]);
+    $result = ['efectivo' => 0.0, 'banco' => 0.0];
+    foreach ($stmt->fetchAll() as $row) {
+        $result[$row['metodo_pago']] = (float)$row['saldo'];
+    }
+    return $result;
+}
+
+/**
+ * Valida saldo de caja — sale con JSON error si no alcanza
+ */
+function validarSaldoCaja(PDO $db, int $cobro_id, float $monto, string $metodo = 'efectivo'): void {
+    $saldos = getSaldoPorMetodo($db, $cobro_id);
+    $saldo  = $saldos[$metodo] ?? 0;
+    if ($saldo < $monto) {
+        echo json_encode([
+            'ok'  => false,
+            'msg' => 'Saldo insuficiente en '.ucfirst($metodo).'. Disponible: '.fmt($saldo).' · Requerido: '.fmt($monto)
+        ]); exit;
+    }
 }
 
 /**

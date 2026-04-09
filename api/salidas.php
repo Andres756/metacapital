@@ -18,12 +18,11 @@ $action = $data['action'] ?? '';
 if ($action === 'crear') {
     if (!canDo('puede_crear_salida')) { echo json_encode(['ok'=>false,'msg'=>'Sin permiso']); exit; }
 
-    $tipo      = $data['tipo']   ?? '';
-    $monto     = (float)($data['monto'] ?? 0);
-    $fecha     = $data['fecha']  ?? date('Y-m-d');
-    $cuenta_id = (int)($data['cuenta_id'] ?? 0);
+    $tipo        = $data['tipo']        ?? '';
+    $monto       = (float)($data['monto'] ?? 0);
+    $fecha       = $data['fecha']       ?? date('Y-m-d');
+    $metodo_pago = in_array($data['metodo_pago']??'',['efectivo','banco']) ? $data['metodo_pago'] : 'efectivo';
 
-    // FIX: tipos alineados con el ENUM real de capital_movimientos
     $tiposValidos = [
         'redito_capitalista' => 'redito',
         'devolucion_capital' => 'retiro_capital',
@@ -38,21 +37,21 @@ if ($action === 'crear') {
     if ($monto <= 0) {
         echo json_encode(['ok'=>false,'msg'=>'El monto debe ser mayor a 0']); exit;
     }
-    if (!$cuenta_id) {
-        echo json_encode(['ok'=>false,'msg'=>'Selecciona la cuenta']); exit;
-    }
-
-    // FIX: validar fecha
     if (!$fecha || !strtotime($fecha)) {
         echo json_encode(['ok'=>false,'msg'=>'Fecha inválida']); exit;
     }
 
-    // Validar saldo de la cuenta
-    validarSaldoCuenta($db, $cuenta_id, $cobro, $monto);
+    // Validar saldo de caja
+    $saldo = getSaldoCaja($db, $cobro);
+    if ($saldo < $monto) {
+        echo json_encode([
+            'ok'  => false,
+            'msg' => 'Saldo insuficiente en caja. Disponible: '.fmt($saldo).' · Requerido: '.fmt($monto)
+        ]); exit;
+    }
 
     $capitalista_id = (int)($data['capitalista_id'] ?? 0) ?: null;
 
-    // FIX: verificar que el capitalista pertenece al cobro activo
     if ($capitalista_id) {
         $chkCap = $db->prepare("SELECT id FROM capitalistas WHERE id=? AND cobro_id=? AND estado='activo'");
         $chkCap->execute([$capitalista_id, $cobro]);
@@ -60,7 +59,6 @@ if ($action === 'crear') {
             echo json_encode(['ok'=>false,'msg'=>'Capitalista no encontrado o inactivo']); exit;
         }
 
-        // Validar saldo del capitalista en devoluciones y liquidaciones
         if (in_array($tipo, ['devolucion_capital','liquidacion'])) {
             validarSaldoCapitalista($db, $capitalista_id, $monto);
         }
@@ -72,14 +70,13 @@ if ($action === 'crear') {
     $db->beginTransaction();
     try {
         $db->prepare("INSERT INTO capital_movimientos
-            (cobro_id, tipo, es_entrada, monto, cuenta_id, capitalista_id, descripcion, fecha, usuario_id)
+            (cobro_id, tipo, es_entrada, monto, metodo_pago, capitalista_id, descripcion, fecha, usuario_id)
             VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?)")
         ->execute([
-            $cobro, $tipo_mov, $monto, $cuenta_id,
+            $cobro, $tipo_mov, $monto, $metodo_pago,
             $capitalista_id, $descripcion, $fecha, $_SESSION['usuario_id']
         ]);
 
-        // Si es liquidación → marcar capitalista como liquidado
         if ($tipo === 'liquidacion' && $capitalista_id) {
             $db->prepare("UPDATE capitalistas SET estado='liquidado', updated_at=NOW() WHERE id=? AND cobro_id=?")
                ->execute([$capitalista_id, $cobro]);
@@ -115,22 +112,18 @@ if ($action === 'crear') {
     $mov = $check->fetch();
     if (!$mov) { echo json_encode(['ok'=>false,'msg'=>'Registro no encontrado']); exit; }
 
-    // FIX: ya estaba anulado
     if ($mov['anulado']) {
         echo json_encode(['ok'=>false,'msg'=>'Este movimiento ya estaba anulado']); exit;
     }
 
-    // FIX: bloquear préstamos por tipo IN ('prestamo','salida') — cubre históricos
     if (in_array($mov['tipo'], ['prestamo','salida']) && $mov['prestamo_id']) {
         echo json_encode([
             'ok'  => false,
-            'msg' => 'Para anular un préstamo ve al detalle del préstamo y usa el botón "Anular". Esto garantiza que las cuotas y el capital queden correctamente revertidos.'
+            'msg' => 'Para anular un préstamo ve al detalle del préstamo y usa el botón "Anular".'
         ]); exit;
     }
 
-    $db->prepare("UPDATE capital_movimientos
-        SET anulado=1, anulado_at=NOW(), anulado_por=?
-        WHERE id=?")
+    $db->prepare("UPDATE capital_movimientos SET anulado=1, anulado_at=NOW(), anulado_por=? WHERE id=?")
        ->execute([$_SESSION['usuario_id'], $id]);
 
     echo json_encode(['ok'=>true,'msg'=>'Movimiento anulado. El saldo fue corregido.']);

@@ -40,20 +40,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
     if ($action === 'resumen_dia') {
         $fecha = $_GET['fecha'] ?? date('Y-m-d');
         $stmt  = $db->prepare("
-            SELECT pg.*, d.nombre AS deudor, c.nombre AS cuenta, cu.numero_cuota
+            SELECT pg.*, d.nombre AS deudor, cu.numero_cuota
             FROM pagos pg
             JOIN deudores d ON d.id = pg.deudor_id
             JOIN cuotas cu  ON cu.id = pg.cuota_id
-            LEFT JOIN cuentas c ON c.id = pg.cuenta_id
             WHERE pg.cobro_id=? AND pg.fecha_pago=? AND (pg.anulado=0 OR pg.anulado IS NULL)
             ORDER BY pg.created_at DESC
         ");
         $stmt->execute([$cobro, $fecha]);
         $pagos = $stmt->fetchAll();
-
-        // FIX: la query ya filtra anulados — no hace falta array_filter
         $total = array_sum(array_column($pagos, 'monto_pagado'));
-
         echo json_encode(['ok'=>true, 'pagos'=>$pagos, 'total'=>$total]);
         exit;
     }
@@ -78,7 +74,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         try {
             $db->beginTransaction();
 
-            // Cargar y validar el pago
             $stmtP = $db->prepare("SELECT * FROM pagos WHERE id=? AND cobro_id=?");
             $stmtP->execute([$pago_id, $cobro]);
             $pago = $stmtP->fetch();
@@ -89,8 +84,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $db->prepare("UPDATE pagos SET anulado=1, anulado_at=NOW(), anulado_por=? WHERE id=?")
                ->execute([$_SESSION['usuario_id'], $pago_id]);
 
-            // 2. FIX: recalcular lo que queda pagado en la cuota
-            //    considerando otros pagos activos — no resetear a 0 si hay parciales previos
+            // 2. Recalcular saldo de la cuota
             $stmtPagCuota = $db->prepare("
                 SELECT COALESCE(SUM(monto_pagado), 0)
                 FROM pagos
@@ -111,20 +105,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 SET estado=?, monto_pagado=?, saldo_cuota=?, fecha_pago=?, updated_at=NOW()
                 WHERE id=?")
                ->execute([
-                   $estado_cuota_nuevo,
-                   $pagado_restante,
-                   $saldo_cuota_nuevo,
-                   $fecha_pago_nueva,
+                   $estado_cuota_nuevo, $pagado_restante,
+                   $saldo_cuota_nuevo, $fecha_pago_nueva,
                    $pago['cuota_id']
                ]);
 
-            // 3. Anular movimiento de capital vinculado (por pago_id — exacto y seguro)
+            // 3. Anular movimiento de capital vinculado por pago_id
             $db->prepare("UPDATE capital_movimientos
                 SET anulado=1, anulado_at=NOW(), anulado_por=?
                 WHERE pago_id=? AND cobro_id=?")
                ->execute([$_SESSION['usuario_id'], $pago_id, $cobro]);
 
-            // 4. Recalcular saldo del préstamo desde cuotas reales
+            // 4. Recalcular saldo del préstamo
             $stmtSaldo = $db->prepare("
                 SELECT COALESCE(SUM(saldo_cuota), 0)
                 FROM cuotas
@@ -133,8 +125,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $stmtSaldo->execute([$pago['prestamo_id']]);
             $nuevo_saldo = (float)$stmtSaldo->fetchColumn();
 
-            // 5. FIX: usar actualizarEstadoMora() en lugar del estado 'vencido'
-            //    que no existe en el ENUM de cuotas — la mora se detecta por fecha
             $nuevo_estado = $nuevo_saldo <= 0
                 ? 'pagado'
                 : actualizarEstadoMora($db, $pago['prestamo_id']);
@@ -157,3 +147,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 }
 
 echo json_encode(['ok'=>false,'msg'=>'Método no permitido']);
+
+// ============================================================
+// HELPER — mora (duplicado aquí para no depender de prestamos.php)
+// ============================================================
+function actualizarEstadoMora(PDO $db, int $prestamo_id): string {
+    $stmt = $db->prepare("SELECT MIN(fecha_vencimiento) FROM cuotas WHERE prestamo_id=? AND estado IN ('pendiente','parcial')");
+    $stmt->execute([$prestamo_id]);
+    $proxima = $stmt->fetchColumn();
+    if (!$proxima) return 'pagado';
+    $hoy  = new DateTime();
+    $venc = new DateTime($proxima);
+    $diff = (int)$hoy->diff($venc)->days * ($hoy > $venc ? 1 : -1);
+    if ($diff > 0) {
+        $db->prepare("UPDATE prestamos SET dias_mora=?, estado='en_mora', updated_at=NOW() WHERE id=?")->execute([$diff, $prestamo_id]);
+        return 'en_mora';
+    }
+    $db->prepare("UPDATE prestamos SET dias_mora=0, updated_at=NOW() WHERE id=?")->execute([$prestamo_id]);
+    return 'activo';
+}
