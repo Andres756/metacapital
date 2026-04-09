@@ -81,53 +81,56 @@ $numCobros = (int)$stmtCobros->fetchColumn();
     $vencidas= (int)($d['cuotas_vencidas'] ?? 0);
     $mora    = (int)($d['dias_mora'] ?? 0);
 ?>
-<a href="/cobrador/cobrar.php?deudor=<?= $d['id'] ?>"
-   class="cob-deudor-row"
-   data-lat="<?= $d['lat'] ?? '' ?>"
-   data-lng="<?= $d['lng'] ?? '' ?>"
-   data-id="<?= $d['id'] ?>">
 
-    <div class="cob-avatar" style="background:<?= $mora > 0 ? '#f97316' : ($estado ? 'var(--accent)' : 'var(--muted)') ?>">
-        <?= $inicial ?>
-    </div>
+<div class="cob-deudor-row" style="cursor:default">
 
-    <div style="flex:1;min-width:0">
-        <div style="font-weight:600;font-size:0.95rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">
-            <?= htmlspecialchars($d['nombre']) ?>
+    <a href="/cobrador/cobrar.php?deudor=<?= $d['id'] ?>"
+       style="display:flex;align-items:center;gap:0.75rem;flex:1;text-decoration:none;color:inherit">
+
+        <div class="cob-avatar" style="background:<?= $mora > 0 ? '#f97316' : ($estado ? 'var(--accent)' : 'var(--muted)') ?>">
+            <?= $inicial ?>
         </div>
-        <div style="font-size:0.72rem;color:var(--muted);font-family:var(--font-mono)">
-            <?php if ($d['telefono']): ?>
-                <?= htmlspecialchars($d['telefono']) ?>
+
+        <div style="flex:1;min-width:0">
+            <div style="font-weight:600;font-size:0.95rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">
+                <?= htmlspecialchars($d['nombre']) ?>
+            </div>
+            <div style="font-size:0.72rem;color:var(--muted);font-family:var(--font-mono)">
+                <?php if ($d['telefono']): ?><?= htmlspecialchars($d['telefono']) ?><?php endif; ?>
+                <?php if ($d['barrio']): ?> · <?= htmlspecialchars($d['barrio']) ?><?php endif; ?>
+            </div>
+        </div>
+
+        <div style="text-align:right;flex-shrink:0">
+            <?php if ($estado === 'en_mora'): ?>
+                <span class="cob-badge cob-badge-mora"><?= $mora ?>d mora</span>
+            <?php elseif ($estado === 'en_acuerdo'): ?>
+                <span class="cob-badge cob-badge-acuerdo">Acuerdo</span>
+            <?php elseif ($estado === 'activo' && $vencidas > 0): ?>
+                <span class="cob-badge cob-badge-mora"><?= $vencidas ?> vencida<?= $vencidas > 1 ? 's' : '' ?></span>
+            <?php elseif ($estado === 'activo'): ?>
+                <span class="cob-badge cob-badge-ok">Al día</span>
+            <?php else: ?>
+                <span class="cob-badge" style="background:rgba(255,255,255,.08);color:var(--muted)">Sin préstamo</span>
             <?php endif; ?>
-            <?php if ($d['barrio']): ?>
-                · <?= htmlspecialchars($d['barrio']) ?>
+            <?php if ($d['valor_cuota']): ?>
+            <div style="font-size:0.85rem;font-weight:700;color:var(--accent);margin-top:2px">
+                $<?= number_format($d['valor_cuota'], 0, ',', '.') ?>
+            </div>
             <?php endif; ?>
+            <div class="dist-label" style="font-size:0.65rem;color:var(--muted);font-family:var(--font-mono)"></div>
         </div>
-    </div>
 
-    <div style="text-align:right;flex-shrink:0">
-        <?php if ($estado === 'en_mora'): ?>
-            <span class="cob-badge cob-badge-mora"><?= $mora ?>d mora</span>
-        <?php elseif ($estado === 'en_acuerdo'): ?>
-            <span class="cob-badge cob-badge-acuerdo">Acuerdo</span>
-        <?php elseif ($estado === 'activo' && $vencidas > 0): ?>
-            <span class="cob-badge cob-badge-mora"><?= $vencidas ?> vencida<?= $vencidas > 1 ? 's' : '' ?></span>
-        <?php elseif ($estado === 'activo'): ?>
-            <span class="cob-badge cob-badge-ok">Al día</span>
-        <?php else: ?>
-            <span class="cob-badge" style="background:rgba(255,255,255,.08);color:var(--muted)">Sin préstamo</span>
-        <?php endif; ?>
+    </a>
 
-        <?php if ($d['valor_cuota']): ?>
-        <div style="font-size:0.85rem;font-weight:700;color:var(--accent);margin-top:2px">
-            $<?= number_format($d['valor_cuota'], 0, ',', '.') ?>
-        </div>
-        <?php endif; ?>
+    <!-- Botón nuevo préstamo -->
+    <a href="/cobrador/prestamo.php?deudor=<?= $d['id'] ?>"
+       style="flex-shrink:0;margin-left:0.5rem;padding:0.4rem 0.6rem;background:rgba(124,106,255,.15);border:1px solid rgba(124,106,255,.3);border-radius:var(--radius);color:var(--accent);font-size:0.72rem;font-family:var(--font-mono);text-decoration:none;white-space:nowrap"
+       title="Nuevo préstamo">
+        + Préstamo
+    </a>
 
-        <!-- Distancia (se llena con JS) -->
-        <div class="dist-label" style="font-size:0.65rem;color:var(--muted);font-family:var(--font-mono)"></div>
-    </div>
-</a>
+</div>
 <?php endforeach; ?>
 
 <?php if (empty($deudores)): ?>

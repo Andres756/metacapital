@@ -148,6 +148,7 @@ $cuentas = $stmtCuentas->fetchAll();
 <div id="panel-cobro">
 
     <!-- Info deudor -->
+    <!-- Cabecera del deudor seleccionado -->
     <div class="cob-card" style="display:flex;align-items:center;gap:0.75rem;margin-bottom:0.75rem">
         <div class="cob-avatar" style="width:50px;height:50px;font-size:1.3rem">
             <?= strtoupper(substr($deudorPre['nombre'], 0, 1)) ?>
@@ -155,12 +156,19 @@ $cuentas = $stmtCuentas->fetchAll();
         <div style="flex:1">
             <div style="font-weight:700;font-size:1.05rem"><?= htmlspecialchars($deudorPre['nombre']) ?></div>
             <div style="font-size:0.75rem;color:var(--muted);font-family:var(--font-mono)">
-                <?= htmlspecialchars($deudorPre['telefono'] ?? '—') ?>
-                <?php if ($deudorPre['barrio']): ?> · <?= htmlspecialchars($deudorPre['barrio']) ?><?php endif; ?>
+                CC: <?= htmlspecialchars($deudorPre['documento'] ?? '—') ?>
+                <?php if ($deudorPre['telefono']): ?> · <?= htmlspecialchars($deudorPre['telefono']) ?><?php endif; ?>
             </div>
         </div>
+
+        <!-- FIX: botón nuevo préstamo -->
+        <a href="/cobrador/prestamo.php?deudor=<?= $deudorPre['id'] ?>"
+        style="flex-shrink:0;padding:0.5rem 0.75rem;background:rgba(124,106,255,.15);border:1px solid rgba(124,106,255,.3);border-radius:var(--radius);color:var(--accent);font-size:0.75rem;font-family:var(--font-mono);text-decoration:none;font-weight:600">
+            + Préstamo
+        </a>
+
         <a href="/cobrador/cobrar.php"
-           style="background:none;border:none;color:var(--muted);font-size:1.2rem;cursor:pointer;padding:0.5rem;text-decoration:none">
+        style="background:none;border:none;color:var(--muted);font-size:1.2rem;text-decoration:none;padding:0.25rem">
             ✕
         </a>
     </div>

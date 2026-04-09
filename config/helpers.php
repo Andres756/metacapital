@@ -16,7 +16,9 @@ function getSaldoCuenta(PDO $db, int $cuenta_id, int $cobro_id): float {
     $stmt = $db->prepare("
         SELECT COALESCE(SUM(CASE WHEN es_entrada=1 THEN monto ELSE -monto END), 0)
         FROM capital_movimientos
-        WHERE cuenta_id=? AND cobro_id=? AND tipo != 'prestamo_proporcional' AND anulado=0
+        WHERE cuenta_id=? AND cobro_id=?
+          AND tipo NOT IN ('prestamo_proporcional','cobro_proporcional')
+          AND anulado=0
     ");
     $stmt->execute([$cuenta_id, $cobro_id]);
     return (float)$stmt->fetchColumn();

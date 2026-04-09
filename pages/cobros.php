@@ -5,8 +5,7 @@ if ($_SESSION['rol'] !== 'superadmin') { include __DIR__ . '/403.php'; exit; }
 
 $db = getDB();
 
-// Cobros base — fetch explícito fila por fila
-$stmtCobros = $db->query("SELECT id, nombre, descripcion, telefono, direccion, activo, created_at, updated_at FROM cobros ORDER BY activo DESC, nombre ASC");
+$stmtCobros = $db->query("SELECT id, nombre, descripcion, telefono, direccion, activo, papeleria_pct, created_at, updated_at FROM cobros ORDER BY activo DESC, nombre ASC");
 $listaCobros = [];
 while ($c = $stmtCobros->fetch(PDO::FETCH_ASSOC)) {
     $cid = (int)$c['id'];
@@ -34,7 +33,6 @@ while ($c = $stmtCobros->fetch(PDO::FETCH_ASSOC)) {
 
 $cobroActual = cobroActivo();
 
-
 $pageTitle   = 'Cobros';
 $pageSection = 'Cobros';
 require_once __DIR__ . '/../includes/header.php';
@@ -56,7 +54,7 @@ require_once __DIR__ . '/../includes/header.php';
   </div>
   <div class="stat-card green">
     <div class="stat-label">Activos</div>
-    <div class="stat-value"><?= count(array_filter($listaCobros, fn($cobro) => ($cobro['activo'] ?? 0))) ?></div>
+    <div class="stat-value"><?= count(array_filter($listaCobros, fn($c) => ($c['activo'] ?? 0))) ?></div>
   </div>
   <div class="stat-card orange">
     <div class="stat-label">Cartera Total</div>
@@ -76,7 +74,6 @@ require_once __DIR__ . '/../includes/header.php';
   <div class="card" style="border-color:<?= $esActual ? 'var(--accent)' : 'var(--border)' ?>">
     <div style="padding:1.25rem;display:flex;align-items:center;gap:1.5rem;flex-wrap:wrap">
 
-      <!-- Indicador + nombre -->
       <div style="display:flex;align-items:center;gap:0.75rem;flex:1;min-width:200px">
         <div style="width:12px;height:12px;border-radius:50%;background:<?= ($cobro['activo'] ?? 0) ? 'var(--accent)' : 'var(--border)' ?>;flex-shrink:0"></div>
         <div>
@@ -94,11 +91,11 @@ require_once __DIR__ . '/../includes/header.php';
           <div style="font-size:0.65rem;color:var(--muted);font-family:var(--font-mono);margin-top:0.2rem">
             Creado <?= isset($cobro['created_at']) ? date('d M Y', strtotime($cobro['created_at'])) : '—' ?>
             <?php if (!empty($cobro['telefono'])): ?> · <?= htmlspecialchars($cobro['telefono']) ?><?php endif; ?>
+            · Papelería: <strong style="color:#f97316"><?= $cobro['papeleria_pct'] ?? 10 ?>%</strong>
           </div>
         </div>
       </div>
 
-      <!-- Stats del cobro -->
       <div style="display:flex;gap:1.5rem;flex-wrap:wrap">
         <div style="text-align:center">
           <div style="font-family:var(--font-mono);font-size:0.6rem;color:var(--muted);text-transform:uppercase;margin-bottom:2px">Usuarios</div>
@@ -114,7 +111,7 @@ require_once __DIR__ . '/../includes/header.php';
         </div>
         <div style="text-align:center">
           <div style="font-family:var(--font-mono);font-size:0.6rem;color:var(--muted);text-transform:uppercase;margin-bottom:2px">En mora</div>
-          <div style="font-family:var(--font-display);font-size:1.1rem;color:<?= (($cobro['prestamos_mora'] ?? 0) ?? 0)>0?'var(--orange)':'var(--muted)' ?>"><?= ($cobro['prestamos_mora'] ?? 0) ?></div>
+          <div style="font-family:var(--font-display);font-size:1.1rem;color:<?= (($cobro['prestamos_mora'] ?? 0))>0?'var(--orange)':'var(--muted)' ?>"><?= ($cobro['prestamos_mora'] ?? 0) ?></div>
         </div>
         <div style="text-align:center">
           <div style="font-family:var(--font-mono);font-size:0.6rem;color:var(--muted);text-transform:uppercase;margin-bottom:2px">Cartera</div>
@@ -126,7 +123,6 @@ require_once __DIR__ . '/../includes/header.php';
         </div>
       </div>
 
-      <!-- Acciones -->
       <div class="btn-group">
         <?php if (!$esActual): ?>
         <button class="btn btn-primary btn-sm" onclick="cambiarCobro(<?= $cobro['id'] ?>)">
@@ -179,6 +175,18 @@ require_once __DIR__ . '/../includes/header.php';
             <label>Dirección</label>
             <input type="text" name="direccion" id="c-direccion" placeholder="Calle 1 # 2-3">
           </div>
+
+          <!-- NUEVO: % Papelería -->
+          <div class="field">
+            <label>% Papelería por defecto</label>
+            <input type="number" name="papeleria_pct" id="c-papeleria-pct"
+                   value="10" min="0" max="100" step="0.5"
+                   placeholder="Ej: 10">
+            <div style="font-size:0.7rem;color:var(--muted);margin-top:0.25rem;font-family:var(--font-mono)">
+                Se aplica automáticamente al crear préstamos. Editable por préstamo.
+            </div>
+          </div>
+
         </div>
       </form>
     </div>
@@ -193,22 +201,24 @@ require_once __DIR__ . '/../includes/header.php';
 
 <script>
 function nuevoCobro() {
-    document.getElementById('titulo-cobro').textContent = 'NUEVO COBRO';
-    document.getElementById('c-id').value          = '';
-    document.getElementById('c-nombre').value      = '';
-    document.getElementById('c-descripcion').value = '';
-    document.getElementById('c-telefono').value    = '';
-    document.getElementById('c-direccion').value   = '';
+    document.getElementById('titulo-cobro').textContent    = 'NUEVO COBRO';
+    document.getElementById('c-id').value                  = '';
+    document.getElementById('c-nombre').value              = '';
+    document.getElementById('c-descripcion').value         = '';
+    document.getElementById('c-telefono').value            = '';
+    document.getElementById('c-direccion').value           = '';
+    document.getElementById('c-papeleria-pct').value       = '10';
     openModal('modal-form-cobro');
 }
 
 function editarCobro(c) {
-    document.getElementById('titulo-cobro').textContent = 'EDITAR COBRO';
-    document.getElementById('c-id').value          = c.id;
-    document.getElementById('c-nombre').value      = c.nombre;
-    document.getElementById('c-descripcion').value = c.descripcion || '';
-    document.getElementById('c-telefono').value    = c.telefono   || '';
-    document.getElementById('c-direccion').value   = c.direccion  || '';
+    document.getElementById('titulo-cobro').textContent    = 'EDITAR COBRO';
+    document.getElementById('c-id').value                  = c.id;
+    document.getElementById('c-nombre').value              = c.nombre;
+    document.getElementById('c-descripcion').value         = c.descripcion || '';
+    document.getElementById('c-telefono').value            = c.telefono    || '';
+    document.getElementById('c-direccion').value           = c.direccion   || '';
+    document.getElementById('c-papeleria-pct').value       = c.papeleria_pct ?? 10;
     openModal('modal-form-cobro');
 }
 
@@ -216,7 +226,6 @@ async function guardarCobro() {
     var btn  = document.getElementById('btn-cobro');
     var data = Object.fromEntries(new FormData(document.getElementById('form-cobro')));
     if (!data.nombre) { toast('El nombre es obligatorio', 'error'); return; }
-    // Eliminar id del objeto si está vacío para que no interfiera
     if (!data.id) delete data.id;
     data.action = data.id ? 'editar_cobro' : 'crear_cobro';
     btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>';

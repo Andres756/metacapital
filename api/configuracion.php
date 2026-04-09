@@ -100,14 +100,17 @@ if ($action === 'editar_cobro') {
         echo json_encode(['ok'=>false,'msg'=>'Cobro no encontrado']); exit;
     }
 
-    $db->prepare("UPDATE cobros SET nombre=?, descripcion=?, telefono=?, direccion=?, updated_at=NOW() WHERE id=?")
-       ->execute([
-           $nombre,
-           trim($data['descripcion'] ?? '') ?: null,
-           trim($data['telefono']    ?? '') ?: null,
-           trim($data['direccion']   ?? '') ?: null,
-           $cobro_id
-       ]);
+    $papeleria_pct = max(0, min(100, (float)($data['papeleria_pct'] ?? 10)));
+
+    $db->prepare("UPDATE cobros SET nombre=?, descripcion=?, telefono=?, direccion=?, papeleria_pct=?, updated_at=NOW() WHERE id=?")
+    ->execute([
+        $nombre,
+        trim($data['descripcion'] ?? '') ?: null,
+        trim($data['telefono']    ?? '') ?: null,
+        trim($data['direccion']   ?? '') ?: null,
+        $papeleria_pct,
+        $cobro_id
+    ]);
     echo json_encode(['ok'=>true,'msg'=>'Cobro actualizado']);
 
 // ---- MI PERFIL ----

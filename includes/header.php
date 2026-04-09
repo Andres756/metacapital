@@ -157,6 +157,18 @@ $pageSection = $pageSection ?? '';
       ?>
       <div class="nav-section-label">Administración</div>
 
+      <?php if (canDo('puede_ver_configuracion')): ?>
+      <a href="/pages/liquidacion.php" class="nav-item <?= $pageSection==='Liquidación'?'active':'' ?>">
+          <span class="nav-icon">⊟</span> Liquidación
+      </a>
+      <?php endif; ?>
+
+      <?php if (canDo('puede_ver_configuracion')): ?>
+      <a href="/pages/papeleria.php" class="nav-item <?= $pageSection==='Papelería'?'active':'' ?>">
+          <span class="nav-icon">📋</span> Papelería
+      </a>
+      <?php endif; ?>
+
       <?php if ($verCobros): ?>
       <a href="/pages/cobros.php" class="nav-item <?= $pageSection==='Cobros'?'active':'' ?>">
         <span class="nav-icon">⬡</span> Cobros

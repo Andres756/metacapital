@@ -23,6 +23,10 @@ if ($deudor_id) {
 $stmtCuentas = $db->prepare("SELECT id, nombre, tipo FROM cuentas WHERE cobro_id=? AND activa=1 ORDER BY nombre");
 $stmtCuentas->execute([$cobro]);
 $cuentas = $stmtCuentas->fetchAll();
+// % papelería del cobro
+$stmtPctPap = $db->prepare("SELECT papeleria_pct FROM cobros WHERE id=?");
+$stmtPctPap->execute([$cobro]);
+$cobroData = ['papeleria_pct' => (float)($stmtPctPap->fetchColumn() ?? 10)];
 
 // Lista de deudores para el buscador (sin clavos)
 $stmtD = $db->prepare("
@@ -153,6 +157,22 @@ $deudores = $stmtD->fetchAll();
         </select>
     </div>
 
+    <!-- % Papelería — solo visual, no editable -->
+    <div class="field-lg">
+        <label style="color:var(--muted)">Papelería</label>
+        <div style="display:flex;align-items:center;gap:0.75rem;padding:0.75rem;background:var(--bg);border-radius:var(--radius);border:1px solid var(--border)">
+            <span style="font-family:var(--font-mono);font-size:0.85rem;color:var(--muted)">
+                <?= $cobroData['papeleria_pct'] ?? 10 ?>%
+            </span>
+            <span id="papeleria-preview" style="font-size:0.85rem;color:#f97316;font-family:var(--font-mono)">
+                —
+            </span>
+        </div>
+        <div style="font-size:0.7rem;color:var(--muted);margin-top:0.25rem;font-family:var(--font-mono)">
+            Se descuenta del monto — definido por el admin
+        </div>
+    </div>
+
     <!-- Preview calculado -->
     <div id="preview-prestamo" style="display:none;margin-bottom:1rem">
         <div style="background:rgba(124,106,255,.1);border:1px solid rgba(124,106,255,.3);border-radius:var(--radius);padding:1rem">
@@ -218,33 +238,47 @@ function onFrecuenciaChange() {
 }
 
 function calcularPreview() {
-    const monto   = parseFloat(document.getElementById('p_monto').value)   || 0;
+    const monto   = parseFloat(document.getElementById('p_monto').value)  || 0;
     const tipoInt = document.getElementById('p_tipo_int').value;
-    const intVal  = parseFloat(document.getElementById('p_interes').value)  || 0;
-    const cuotas  = parseInt(document.getElementById('p_cuotas').value)     || 1;
+    const intVal  = parseFloat(document.getElementById('p_interes').value) || 0;
+    const cuotas  = parseInt(document.getElementById('p_cuotas').value)    || 1;
     const freq    = document.getElementById('p_frecuencia').value;
     const fecha   = document.getElementById('p_fecha').value;
+
+    // FIX: % papelería viene del cobro — no de un input del cobrador
+    const papPct  = <?= $cobroData['papeleria_pct'] ?? 10 ?>;
 
     document.getElementById('label-interes').textContent =
         tipoInt === 'porcentaje' ? 'Interés (%)' : 'Interés ($ fijo total)';
 
-    if (!monto) { document.getElementById('preview-prestamo').style.display = 'none'; return; }
+    if (!monto) {
+        document.getElementById('preview-prestamo').style.display = 'none';
+        document.getElementById('papeleria-preview').textContent  = '';
+        return;
+    }
 
-    const intCalc = tipoInt === 'porcentaje' ? monto * (intVal / 100) : intVal;
-    const total   = monto + intCalc;
-    const valCuota= cuotas > 0 ? Math.round(total / cuotas) : total;
+    const intCalc  = tipoInt === 'porcentaje' ? monto * (intVal / 100) : intVal;
+    const total    = monto + intCalc;
+    const valCuota = cuotas > 0 ? Math.round(total / cuotas) : total;
+    const papMonto = Math.round(monto * (papPct / 100));
+    const montoReal= monto - papMonto; // lo que realmente recibe el cliente
 
-    const diasMap = { diario:1, semanal:7, quincenal:15, mensual:30 };
+    const diasMap  = { diario:1, semanal:7, quincenal:15, mensual:30 };
     const fechaFin = new Date(fecha || new Date());
     fechaFin.setDate(fechaFin.getDate() + (diasMap[freq] || 30) * cuotas);
 
     const fmt = n => '$' + Math.round(n).toLocaleString('es-CO');
+
     document.getElementById('prev-interes').textContent = fmt(intCalc);
     document.getElementById('prev-total').textContent   = fmt(total);
     document.getElementById('prev-cuota').textContent   = fmt(valCuota) + ' × ' + cuotas;
     document.getElementById('prev-fecha').textContent   =
         fechaFin.toLocaleDateString('es-CO', {day:'2-digit',month:'short',year:'numeric'});
     document.getElementById('preview-prestamo').style.display = 'block';
+
+    // Solo visual — el cobrador no puede editar el %
+    document.getElementById('papeleria-preview').textContent =
+        papMonto > 0 ? `Papelería: ${fmt(papMonto)} · Cliente recibe: ${fmt(montoReal)}` : '';
 }
 
 async function guardarPrestamo() {
@@ -295,6 +329,7 @@ async function guardarPrestamo() {
                 fecha_inicio        : fecha,
                 cuenta_desembolso_id: parseInt(cuenta),
                 omitir_domingos     : domingos ? 1 : 0,
+                papeleria_pct: <?= $cobroData['papeleria_pct'] ?? 10 ?>,
                 observaciones       : document.getElementById('p_obs').value.trim(),
                 tipo_origen         : 'nuevo'
             })

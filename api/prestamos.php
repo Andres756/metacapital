@@ -54,7 +54,13 @@ if ($action === 'crear') {
         echo json_encode(['ok'=>false,'msg'=>'Debes seleccionar una cuenta de desembolso']); exit;
     }
 
-    validarSaldoCuenta($db, $cuenta_desembolso_id, $cobro, $monto);
+    // Verificar que la cuenta existe y pertenece al cobro
+    $stmtCuenta = $db->prepare("SELECT nombre FROM cuentas WHERE id=? AND cobro_id=? AND activa=1");
+    $stmtCuenta->execute([$cuenta_desembolso_id, $cobro]);
+    $cuentaData = $stmtCuenta->fetch();
+    if (!$cuentaData) {
+        echo json_encode(['ok'=>false,'msg'=>'Cuenta no encontrada']); exit;
+    }
 
     $interes_calc = $tipo_int === 'porcentaje'
         ? $monto * ($interes_val / 100)
@@ -68,40 +74,88 @@ if ($action === 'crear') {
         $valor_cuota = round($total / $num_cuotas, 2);
     }
 
-    $diasMap = ['diario'=>1,'semanal'=>7,'quincenal'=>15,'mensual'=>30];
-    $dias    = $diasMap[$frecuencia] ?? 30;
-    $fechaFin= (new DateTime($fecha_ini))->modify("+".($dias * $num_cuotas)." days")->format('Y-m-d');
+    $diasMap  = ['diario'=>1,'semanal'=>7,'quincenal'=>15,'mensual'=>30];
+    $dias     = $diasMap[$frecuencia] ?? 30;
+    $fechaFin = (new DateTime($fecha_ini))->modify("+".($dias * $num_cuotas)." days")->format('Y-m-d');
+
+    // Cargar % papelería del cobro
+    $stmtPap = $db->prepare("SELECT papeleria_pct FROM cobros WHERE id=?");
+    $stmtPap->execute([$cobro]);
+    $papeleria_pct_default = (float)($stmtPap->fetchColumn() ?? 10);
+
+    // Si viene un % específico para este préstamo, usarlo
+    $papeleria_pct   = isset($data['papeleria_pct']) && $data['papeleria_pct'] !== ''
+        ? max(0, min(100, (float)$data['papeleria_pct']))
+        : $papeleria_pct_default;
+    $papeleria_monto = round($monto * ($papeleria_pct / 100), 0);
 
     $db->beginTransaction();
     try {
+
+        // FIX: validar saldo DENTRO de la transacción para que el rollback cubra todo
+        $saldo = getSaldoCuenta($db, $cuenta_desembolso_id, $cobro);
+        if ($saldo < $monto) {
+            $db->rollBack();
+            echo json_encode([
+                'ok'  => false,
+                'msg' => 'Saldo insuficiente en "'.$cuentaData['nombre'].'". '
+                       . 'Disponible: '.fmt($saldo).' · Requerido: '.fmt($monto)
+            ]); exit;
+        }
+
         $db->prepare("
             INSERT INTO prestamos
-              (cobro_id, deudor_id, capitalista_id, monto_prestado, tipo_interes, interes_valor,
-               interes_calculado, total_a_pagar, frecuencia_pago, num_cuotas, valor_cuota,
-               fecha_inicio, fecha_fin_esperada, cuenta_desembolso_id, saldo_pendiente,
-               tipo_origen, observaciones, omitir_domingos, usuario_id)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            (cobro_id, deudor_id, capitalista_id, monto_prestado, tipo_interes, interes_valor,
+            interes_calculado, total_a_pagar, frecuencia_pago, num_cuotas, valor_cuota,
+            fecha_inicio, fecha_fin_esperada, cuenta_desembolso_id, saldo_pendiente,
+            tipo_origen, observaciones, omitir_domingos, papeleria_pct, papeleria_monto,
+            usuario_id)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         ")->execute([
             $cobro, $deudor_id,
             ($data['capitalista_id'] ?? null) ?: null,
             $monto, $tipo_int, $interes_val, $interes_calc, $total,
             $frecuencia, $num_cuotas, $valor_cuota,
             $fecha_ini, $fechaFin,
-            ($data['cuenta_desembolso_id'] ?: null),
+            $cuenta_desembolso_id,
             $total,
             $data['tipo_origen'] ?? 'nuevo',
             $data['observaciones'] ?? null,
             !empty($data['omitir_domingos']) ? 1 : 0,
+            $papeleria_pct,
+            $papeleria_monto,
             $_SESSION['usuario_id']
         ]);
-        $prestamo_id     = $db->lastInsertId();
+        $prestamo_id     = (int)$db->lastInsertId();
         $omitir_domingos = !empty($data['omitir_domingos']);
 
         generarCuotas($db, $prestamo_id, $cobro, $fecha_ini, $frecuencia, $num_cuotas, $valor_cuota, $total, $omitir_domingos);
 
+        // Registrar papelería
+        if ($papeleria_monto > 0) {
+            // Buscar cobrador del cobro
+            $stmtCob = $db->prepare("
+                SELECT u.id FROM usuarios u
+                JOIN usuario_cobro uc ON uc.usuario_id = u.id
+                WHERE uc.cobro_id = ? AND u.rol = 'cobrador' AND u.activo = 1
+                LIMIT 1
+            ");
+            $stmtCob->execute([$cobro]);
+            $cobrador_id = (int)($stmtCob->fetchColumn() ?: $_SESSION['usuario_id']);
+
+            $db->prepare("INSERT INTO papeleria
+                (cobro_id, prestamo_id, cobrador_id, fecha, monto_prestado, pct_aplicado, monto_papeleria)
+                VALUES (?,?,?,?,?,?,?)")
+            ->execute([
+                $cobro, $prestamo_id, $cobrador_id,
+                $fecha_ini, $monto, $papeleria_pct, $papeleria_monto
+            ]);
+        }
+
         $db->prepare("INSERT INTO capital_movimientos
-                (cobro_id, tipo, es_entrada, monto, cuenta_id, capitalista_id, prestamo_id, descripcion, fecha, usuario_id)
-                VALUES (?, 'prestamo', 0, ?, ?, ?, ?, ?, ?, ?)")->execute([
+            (cobro_id, tipo, es_entrada, monto, cuenta_id, capitalista_id, prestamo_id, descripcion, fecha, usuario_id)
+            VALUES (?, 'prestamo', 0, ?, ?, ?, ?, ?, ?, ?)")
+        ->execute([
             $cobro, $monto, $cuenta_desembolso_id,
             ($data['capitalista_id'] ?? null) ?: null,
             $prestamo_id,
@@ -109,23 +163,29 @@ if ($action === 'crear') {
             $fecha_ini, $_SESSION['usuario_id']
         ]);
 
+        // Descuentos proporcionales por capitalista
         $capsQ = $db->prepare("
             SELECT c.id, c.tipo,
-                COALESCE(SUM(CASE WHEN m.es_entrada=1 AND m.tipo!='prestamo_proporcional' THEN m.monto ELSE 0 END),0) AS total_aporte,
-                COALESCE(SUM(CASE WHEN m.es_entrada=1 THEN m.monto ELSE -m.monto END),0) AS saldo_actual
+                COALESCE(SUM(CASE WHEN m.es_entrada=1 AND m.tipo NOT IN ('prestamo_proporcional','cobro_proporcional') THEN m.monto ELSE 0 END),0) AS total_aporte,
+                COALESCE(SUM(CASE WHEN m.es_entrada=1 AND m.tipo NOT IN ('prestamo_proporcional','cobro_proporcional') THEN m.monto
+                               WHEN m.es_entrada=0 AND m.tipo NOT IN ('prestamo_proporcional','cobro_proporcional') THEN -m.monto
+                               WHEN m.tipo='prestamo_proporcional' THEN -m.monto
+                               WHEN m.tipo='cobro_proporcional'    THEN  m.monto
+                               ELSE 0 END),0) AS saldo_actual
             FROM capitalistas c
-            LEFT JOIN capital_movimientos m ON m.capitalista_id=c.id AND m.cobro_id=c.cobro_id
+            LEFT JOIN capital_movimientos m ON m.capitalista_id=c.id AND m.cobro_id=c.cobro_id AND m.anulado=0
             WHERE c.cobro_id=? AND c.estado='activo'
             GROUP BY c.id, c.tipo
             HAVING saldo_actual > 0
             ORDER BY FIELD(c.tipo,'propio','prestado'), saldo_actual DESC
         ");
         $capsQ->execute([$cobro]);
-        $capsData   = $capsQ->fetchAll();
-        $propios    = array_filter($capsData, fn($c) => $c['tipo'] === 'propio');
-        $prestados  = array_filter($capsData, fn($c) => $c['tipo'] === 'prestado');
+        $capsData  = $capsQ->fetchAll();
+        $propios   = array_filter($capsData, fn($c) => $c['tipo'] === 'propio');
+        $prestados = array_filter($capsData, fn($c) => $c['tipo'] === 'prestado');
 
         $montoRestante = (float)$monto;
+
         foreach ($propios as $cap) {
             if ($montoRestante <= 0) break;
             $descuento = min($montoRestante, (float)$cap['saldo_actual']);
@@ -153,7 +213,7 @@ if ($action === 'crear') {
                 $descuento = min($descuento, (float)$cap['saldo_actual']);
                 $montoRestante -= $descuento;
                 if ($descuento <= 0) continue;
-                $pctLabel  = round($pct * 100);
+                $pctLabel = round($pct * 100);
                 $db->prepare("INSERT INTO capital_movimientos
                     (cobro_id, tipo, es_entrada, monto, cuenta_id, capitalista_id, prestamo_id, descripcion, fecha, usuario_id)
                     VALUES (?, 'prestamo_proporcional', 0, ?, ?, ?, ?, ?, ?, ?)")

@@ -13,10 +13,6 @@ $stmtC = $db->prepare("SELECT * FROM cobros WHERE id=?");
 $stmtC->execute([$cobro]);
 $cobroData = $stmtC->fetch();
 
-// Todos los cobros (superadmin puede ver y crear)
-$stmtCobros = $db->query("SELECT * FROM cobros ORDER BY nombre");
-$cobros = $stmtCobros->fetchAll();
-
 // Datos del usuario actual
 $stmtU = $db->prepare("SELECT * FROM usuarios WHERE id=?");
 $stmtU->execute([$_SESSION['usuario_id']]);
@@ -164,52 +160,73 @@ require_once __DIR__ . '/../includes/header.php';
     </div>
   </div>
 
-</div>
-
-<?php if ($_SESSION['rol'] === 'superadmin'): ?>
-<!-- ============ GESTIÓN DE COBROS ============ -->
+  <!-- ============ CATEGORÍAS DE GASTO ============ -->
 <div class="card mt-2">
   <div class="card-header">
-    <span class="card-title">COBROS DEL SISTEMA</span>
-    <button class="btn btn-ghost btn-sm" onclick="openModal('modal-cobro')">+ Nuevo cobro</button>
+    <span class="card-title">CATEGORÍAS DE GASTO</span>
+    <button class="btn btn-ghost btn-sm" onclick="openModal('modal-categoria')">+ Nueva categoría</button>
   </div>
+  <?php
+    $stmtCats = $db->prepare("SELECT * FROM categorias_gasto WHERE cobro_id=? ORDER BY nombre");
+    $stmtCats->execute([$cobro]);
+    $categoriasGasto = $stmtCats->fetchAll();
+  ?>
+  <?php if (empty($categoriasGasto)): ?>
+  <div class="empty-state"><span class="empty-icon">◈</span><p>Sin categorías creadas</p></div>
+  <?php else: ?>
   <div class="table-wrap">
     <table>
       <thead>
-        <tr><th>ID</th><th>Nombre</th><th>Descripción</th><th>Teléfono</th><th>Estado</th><th>Creado</th><th></th></tr>
+        <tr><th>Nombre</th><th>Estado</th><th></th></tr>
       </thead>
       <tbody>
-        <?php foreach ($cobros as $c): ?>
+        <?php foreach ($categoriasGasto as $cat): ?>
         <tr>
-          <td class="text-mono text-muted">#<?= $c['id'] ?></td>
+          <td><strong><?= htmlspecialchars($cat['nombre']) ?></strong></td>
           <td>
-            <strong><?= htmlspecialchars($c['nombre']) ?></strong>
-            <?php if ($c['id'] == $cobro): ?>
-            <span class="badge badge-green" style="margin-left:0.4rem">ACTIVO</span>
-            <?php endif; ?>
-          </td>
-          <td class="text-muted" style="font-size:0.78rem"><?= htmlspecialchars($c['descripcion']??'—') ?></td>
-          <td class="text-mono text-muted"><?= htmlspecialchars($c['telefono']??'—') ?></td>
-          <td>
-            <span class="badge <?= $c['activo']?'badge-green':'badge-muted' ?>">
-              <?= $c['activo']?'ACTIVO':'INACTIVO' ?>
+            <span class="badge <?= $cat['activa'] ? 'badge-green' : 'badge-muted' ?>">
+              <?= $cat['activa'] ? 'ACTIVA' : 'INACTIVA' ?>
             </span>
           </td>
-          <td class="text-mono text-muted" style="font-size:0.72rem"><?= date('d M Y', strtotime($c['created_at'])) ?></td>
           <td>
-            <?php if ($c['id'] != $cobro): ?>
-            <button class="btn btn-ghost btn-sm" onclick="cambiarCobro(<?= $c['id'] ?>)">
-              Cambiar a este
+            <button class="btn btn-ghost btn-sm"
+                    onclick="toggleCategoria(<?= $cat['id'] ?>, <?= $cat['activa'] ? 0 : 1 ?>)">
+              <?= $cat['activa'] ? 'Inactivar' : 'Activar' ?>
             </button>
-            <?php endif; ?>
           </td>
         </tr>
         <?php endforeach; ?>
       </tbody>
     </table>
   </div>
+  <?php endif; ?>
 </div>
 
+<!-- Modal nueva categoría -->
+<div class="modal-overlay" id="modal-categoria">
+  <div class="modal" style="max-width:400px">
+    <div class="modal-header">
+      <h2>NUEVA CATEGORÍA DE GASTO</h2>
+      <button class="modal-close" onclick="closeModal('modal-categoria')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="field">
+        <label>Nombre <span class="required">*</span></label>
+        <input type="text" id="cat-nombre" placeholder="Ej: Transporte, Papelería, Salario...">
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('modal-categoria')">Cancelar</button>
+      <button class="btn btn-primary" onclick="crearCategoria()">CREAR</button>
+    </div>
+  </div>
+</div>
+
+</div>
+
+
+
+<?php if ($_SESSION['rol'] === 'superadmin'): ?>
 <!-- ============ ZONA DE PELIGRO ============ -->
 <div class="card mt-2" style="border-color:rgba(255,60,60,0.3)">
   <div class="card-header">
@@ -223,13 +240,6 @@ require_once __DIR__ . '/../includes/header.php';
           Descarga una copia completa en Excel
         </div>
         <button class="btn btn-ghost btn-sm" onclick="exportarTodo()">📦 Exportar backup</button>
-      </div>
-      <div style="padding:1rem;background:var(--bg);border:1px solid rgba(255,60,60,0.2);border-radius:var(--radius)">
-        <div style="font-weight:600;margin-bottom:0.35rem;color:var(--danger)">Vaciar datos de prueba</div>
-        <div style="font-size:0.75rem;color:var(--muted);margin-bottom:0.75rem;font-family:var(--font-mono)">
-          Borra deudores, préstamos y movimientos del cobro activo
-        </div>
-        <button class="btn btn-danger btn-sm" onclick="vaciarDatos()">⚠ Vaciar cobro</button>
       </div>
     </div>
   </div>
@@ -289,6 +299,17 @@ require_once __DIR__ . '/../includes/header.php';
           <div class="field">
             <label>Dirección</label>
             <input type="text" name="direccion" placeholder="Calle 1 # 2-3">
+          </div>
+          <!-- Agregar dentro del form-grid del cobro, después del campo dirección -->
+          <div class="field">
+              <label>% Papelería por defecto</label>
+              <input type="number" name="papeleria_pct"
+                    value="<?= htmlspecialchars($cobroData['papeleria_pct'] ?? 10) ?>"
+                    min="0" max="100" step="0.5"
+                    placeholder="Ej: 10">
+              <div style="font-size:0.72rem;color:var(--muted);margin-top:0.25rem;font-family:var(--font-mono)">
+                  Se aplica automáticamente al crear préstamos. Editable por préstamo.
+              </div>
           </div>
         </div>
       </form>
@@ -434,6 +455,23 @@ async function eliminarLogo() {
     if (!confirm('¿Eliminar el logo actual?')) return;
     var res = await apiPost('/api/upload_logo.php', { action: 'eliminar' });
     if (res.ok) { toast('Logo eliminado'); setTimeout(function(){ location.reload(); }, 600); }
+    else toast(res.msg || 'Error', 'error');
+}
+
+async function crearCategoria() {
+    const nombre = document.getElementById('cat-nombre').value.trim();
+    if (!nombre) { toast('El nombre es obligatorio', 'error'); return; }
+    const res = await apiPost('/api/gastos.php', { action: 'crear_categoria', nombre });
+    if (res.ok) {
+        toast(res.msg);
+        closeModal('modal-categoria');
+        setTimeout(() => location.reload(), 600);
+    } else toast(res.msg || 'Error', 'error');
+}
+
+async function toggleCategoria(id, activa) {
+    const res = await apiPost('/api/gastos.php', { action: 'toggle_categoria', id, activa });
+    if (res.ok) { toast(res.msg); setTimeout(() => location.reload(), 600); }
     else toast(res.msg || 'Error', 'error');
 }
 </script>
