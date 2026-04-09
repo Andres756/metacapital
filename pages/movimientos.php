@@ -64,13 +64,20 @@ $stats = $stmtStats->fetch();
 
 // Tipos disponibles para filtro
 $tiposMap = [
-    'ingreso_capital'  => 'Ingreso Capital',
-    'retiro_capital'   => 'Retiro Capital',
-    'prestamo'         => 'Préstamo Entregado',
-    'cobro_cuota'      => 'Cobro Cuota',
-    'redito'           => 'Rédito Pagado',
-    'salida'           => 'Salida/Gasto',
-    'ajuste'           => 'Ajuste',
+    'ingreso_capital'      => 'Ingreso Capital',
+    'retiro_capital'       => 'Devolución Capital',
+    'prestamo'             => 'Préstamo Entregado',
+    'cobro_cuota'          => 'Cobro Cuota',
+    'redito'               => 'Rédito Pagado',
+    'retiro'               => 'Retiro Capitalista',
+    'liquidacion'          => 'Liquidación',
+    'salida'               => 'Gasto / Salida',
+    'cobro_proporcional'   => 'Cobro Proporcional',
+    'prestamo_proporcional'=> 'Préstamo Proporcional',
+    'redito_causado'       => 'Rédito Causado',
+    'redito_pagado'        => 'Rédito Pagado',
+    'cobro_entrada'        => 'Cobro Entrada',
+    'prestamo_salida'      => 'Préstamo Salida',
 ];
 
 $pageTitle   = 'Movimientos';

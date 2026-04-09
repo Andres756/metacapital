@@ -16,7 +16,7 @@ function getSaldoCuenta(PDO $db, int $cuenta_id, int $cobro_id): float {
     $stmt = $db->prepare("
         SELECT COALESCE(SUM(CASE WHEN es_entrada=1 THEN monto ELSE -monto END), 0)
         FROM capital_movimientos
-        WHERE cuenta_id=? AND cobro_id=?
+        WHERE cuenta_id=? AND cobro_id=? 
           AND tipo NOT IN ('prestamo_proporcional','cobro_proporcional')
           AND anulado=0
     ");
@@ -48,9 +48,6 @@ function validarSaldoCuenta(PDO $db, int $cuenta_id, int $cobro_id, float $monto
         echo json_encode(['ok'=>false,'msg'=>'Cuenta no encontrada']); exit;
     }
     $saldo = getSaldoCuenta($db, $cuenta_id, $cobro_id);
-    
-    // DEBUG TEMPORAL — quitar después
-    error_log("validarSaldoCuenta: cuenta_id=$cuenta_id cobro_id=$cobro_id saldo=$saldo monto=$monto");
     
     if ($saldo < $monto) {
         echo json_encode([

@@ -15,9 +15,9 @@ $offset     = ($page - 1) * $limit;
 list($anio, $mes) = explode('-', $filtroMes);
 
 // Tipos que son salidas
-$tiposSalida = ['prestamo','redito','devolucion','gasto','retiro_socio'];
+$tiposSalida = ['prestamo','redito','retiro_capital','retiro','liquidacion','salida'];
 
-$where  = ["m.cobro_id=?", "m.es_entrada=0", "m.tipo IN ('prestamo','redito','devolucion','gasto','retiro_socio')", 'YEAR(m.fecha)=?', 'MONTH(m.fecha)=?'];
+$where  = ["m.cobro_id=?", "m.es_entrada=0", "m.tipo IN ('prestamo','redito','retiro_capital','retiro','liquidacion','salida')", 'YEAR(m.fecha)=?', 'MONTH(m.fecha)=?'];
 $params = [$cobro, $anio, $mes];
 
 if ($filtroTipo && in_array($filtroTipo, $tiposSalida)) {
@@ -45,14 +45,17 @@ $salidas = $stmt->fetchAll();
 // Stats del mes
 $stmtStats = $db->prepare("
     SELECT
-        COALESCE(SUM(monto), 0)                                             AS total_mes,
-        COALESCE(SUM(CASE WHEN tipo='redito'      THEN monto ELSE 0 END),0) AS reditos,
-        COALESCE(SUM(CASE WHEN tipo='gasto'       THEN monto ELSE 0 END),0) AS gastos,
-        COALESCE(SUM(CASE WHEN tipo='devolucion'  THEN monto ELSE 0 END),0) AS devoluciones,
-        COALESCE(SUM(CASE WHEN tipo='retiro_socio'THEN monto ELSE 0 END),0) AS retiros,
-        COALESCE(SUM(CASE WHEN tipo='prestamo'    THEN monto ELSE 0 END),0) AS prestamos_salida
+        COALESCE(SUM(monto), 0) AS total_mes,
+        COALESCE(SUM(CASE WHEN tipo='redito'        THEN monto ELSE 0 END),0) AS reditos,
+        COALESCE(SUM(CASE WHEN tipo='salida'        THEN monto ELSE 0 END),0) AS gastos,
+        COALESCE(SUM(CASE WHEN tipo='retiro_capital' THEN monto ELSE 0 END),0) AS devoluciones,
+        COALESCE(SUM(CASE WHEN tipo='retiro'        THEN monto ELSE 0 END),0) AS retiros,
+        COALESCE(SUM(CASE WHEN tipo='prestamo'      THEN monto ELSE 0 END),0) AS prestamos_salida
     FROM capital_movimientos
-    WHERE cobro_id=? AND es_entrada=0 AND tipo IN ('prestamo','redito','devolucion','gasto','retiro_socio') AND (anulado=0 OR anulado IS NULL) AND YEAR(fecha)=? AND MONTH(fecha)=?
+    WHERE cobro_id=? AND es_entrada=0 
+      AND tipo IN ('prestamo','redito','retiro_capital','retiro','liquidacion','salida') 
+      AND (anulado=0 OR anulado IS NULL) 
+      AND YEAR(fecha)=? AND MONTH(fecha)=?
 ");
 $stmtStats->execute([$cobro, $anio, $mes]);
 $stats = $stmtStats->fetch();
