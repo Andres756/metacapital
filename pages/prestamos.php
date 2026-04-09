@@ -46,13 +46,11 @@ $totalPags = ceil($total / $limit);
 
 $sql = "
     SELECT p.*, d.nombre AS deudor_nombre, d.telefono AS deudor_tel,
-        cap.nombre AS capitalista,
         (SELECT COUNT(*) FROM cuotas WHERE prestamo_id=p.id AND estado='pagado') AS cuotas_pagadas,
         (SELECT COUNT(*) FROM cuotas WHERE prestamo_id=p.id) AS cuotas_total,
         (SELECT MIN(fecha_vencimiento) FROM cuotas WHERE prestamo_id=p.id AND estado IN ('pendiente','parcial')) AS proxima_cuota
     FROM prestamos p
     JOIN deudores d ON d.id=p.deudor_id
-    LEFT JOIN capitalistas cap ON cap.id=p.capitalista_id
     WHERE $whereSQL
     ORDER BY CASE p.estado WHEN 'en_mora' THEN 1 WHEN 'en_acuerdo' THEN 2 WHEN 'activo' THEN 3 ELSE 4 END, p.updated_at DESC
     LIMIT $limit OFFSET $offset
@@ -74,14 +72,6 @@ $stats = $stmtS->fetch();
 $deudoresQ = $db->prepare("SELECT d.id, d.nombre FROM deudores d JOIN deudor_cobro dc ON dc.deudor_id=d.id WHERE dc.cobro_id=? AND d.activo=1 ORDER BY d.nombre");
 $deudoresQ->execute([$cobro]);
 $deudores = $deudoresQ->fetchAll();
-
-$capitalistasQ = $db->prepare("SELECT c.id, c.nombre, c.tipo, COALESCE(SUM(CASE WHEN m.es_entrada=1 THEN m.monto ELSE -m.monto END),0) AS saldo_actual FROM capitalistas c LEFT JOIN capital_movimientos m ON m.capitalista_id=c.id AND m.cobro_id=c.cobro_id WHERE c.cobro_id=? AND c.estado='activo' GROUP BY c.id ORDER BY c.nombre");
-$capitalistasQ->execute([$cobro]);
-$capitalistas = $capitalistasQ->fetchAll();
-
-$cuentasQ = $db->prepare("SELECT id, nombre FROM cuentas WHERE cobro_id=? AND activa=1 ORDER BY nombre");
-$cuentasQ->execute([$cobro]);
-$cuentas = $cuentasQ->fetchAll();
 
 $deudorPre = (int)($_GET['deudor'] ?? 0);
 $action    = $_GET['action'] ?? '';
@@ -117,11 +107,11 @@ require_once __DIR__ . '/../includes/header.php';
     </div>
     <select name="filtro" onchange="this.form.submit()" style="width:auto">
       <option value="">Todos activos</option>
-      <option value="activo"    <?= $filtro==='activo'   ?'selected':'' ?>>Solo activos</option>
-      <option value="mora"      <?= $filtro==='mora'     ?'selected':'' ?>>En mora</option>
-      <option value="acuerdo"   <?= $filtro==='acuerdo'  ?'selected':'' ?>>En acuerdo</option>
-      <option value="pagado"    <?= $filtro==='pagado'   ?'selected':'' ?>>Pagados</option>
-      <option value="inactivo"  <?= $filtro==='inactivo' ?'selected':'' ?>>Renovados/Refinanciados</option>
+      <option value="activo"   <?= $filtro==='activo'   ?'selected':'' ?>>Solo activos</option>
+      <option value="mora"     <?= $filtro==='mora'     ?'selected':'' ?>>En mora</option>
+      <option value="acuerdo"  <?= $filtro==='acuerdo'  ?'selected':'' ?>>En acuerdo</option>
+      <option value="pagado"   <?= $filtro==='pagado'   ?'selected':'' ?>>Pagados</option>
+      <option value="inactivo" <?= $filtro==='inactivo' ?'selected':'' ?>>Renovados/Refinanciados</option>
     </select>
     <button type="submit" class="btn btn-secondary">Buscar</button>
     <?php if ($buscar || $filtro): ?>
@@ -143,11 +133,11 @@ require_once __DIR__ . '/../includes/header.php';
         <?php foreach ($prestamos as $p):
           $pct = $p['cuotas_total'] > 0 ? round($p['cuotas_pagadas']/$p['cuotas_total']*100) : 0;
           $estadoClass = match($p['estado']) {
-            'activo'      => 'badge-purple',
-            'en_mora'     => 'badge-orange',
-            'en_acuerdo'  => 'badge-blue',
-            'pagado'      => 'badge-green',
-            default       => 'badge-muted'
+            'activo'     => 'badge-purple',
+            'en_mora'    => 'badge-orange',
+            'en_acuerdo' => 'badge-blue',
+            'pagado'     => 'badge-green',
+            default      => 'badge-muted'
           };
           $diasMora = (int)$p['dias_mora'];
         ?>
@@ -155,7 +145,6 @@ require_once __DIR__ . '/../includes/header.php';
           <td class="text-mono text-muted"><?= $p['id'] ?></td>
           <td>
             <div style="font-weight:600"><?= htmlspecialchars($p['deudor_nombre']) ?></div>
-            <?php if ($p['capitalista']): ?><div class="text-xs text-muted"><?= htmlspecialchars($p['capitalista']) ?></div><?php endif; ?>
           </td>
           <td class="text-mono"><?= fmt($p['monto_prestado']) ?></td>
           <td class="text-mono"><?= $p['interes_valor'] ?><?= $p['tipo_interes']==='porcentaje'?'%':' fijo' ?><div class="text-xs text-muted">+<?= fmt($p['interes_calculado']) ?></div></td>
@@ -220,27 +209,15 @@ require_once __DIR__ . '/../includes/header.php';
             </select>
           </div>
           <div class="field">
-            <label>Capitalista <span style="color:var(--muted);font-weight:400;font-size:0.7rem">(referencia opcional)</span></label>
-            <select id="p_capitalista" name="capitalista_id">
-              <option value="">— Caja general —</option>
-              <?php foreach ($capitalistas as $c): ?>
-              <option value="<?= $c['id'] ?>">
-                <?= htmlspecialchars($c['nombre']) ?> — Saldo: <?= fmt($c['saldo_actual'] ?? 0) ?>
-              </option>
-              <?php endforeach; ?>
+            <label>Método de pago</label>
+            <select name="metodo_pago">
+              <option value="efectivo">Efectivo</option>
+              <option value="banco">Banco</option>
             </select>
-            <div style="margin-top:0.35rem;font-family:var(--font-mono);font-size:0.65rem;color:var(--muted)">
-              El préstamo sale de la caja global. El capitalista es solo para referencia.
-            </div>
           </div>
           <div class="field">
-            <label>Cuenta de desembolso</label>
-            <select id="p_cuenta" name="cuenta_desembolso_id">
-              <option value="">— Sin asignar —</option>
-              <?php foreach ($cuentas as $c): ?>
-              <option value="<?= $c['id'] ?>"><?= htmlspecialchars($c['nombre']) ?></option>
-              <?php endforeach; ?>
-            </select>
+            <label>Observaciones</label>
+            <input type="text" name="observaciones" placeholder="Opcional">
           </div>
         </div>
 
@@ -291,10 +268,6 @@ require_once __DIR__ . '/../includes/header.php';
             <input type="number" id="p_valor_cuota" name="valor_cuota_override" placeholder="Auto" step="1000" oninput="calcPreviewManual()">
             <span class="field-hint">Deja vacío para calcular automático</span>
           </div>
-          <div class="field">
-            <label>Observaciones</label>
-            <input type="text" name="observaciones" placeholder="Opcional">
-          </div>
           <div class="field" id="campo-omitir-domingos" style="display:none">
             <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;font-weight:normal">
               <input type="checkbox" id="p_omitir_domingos" name="omitir_domingos" value="1"
@@ -328,10 +301,10 @@ function calcPreview() {
     var intVal = parseFloat(document.getElementById('p_interes').value) || 0;
     var cuotas = parseInt(document.getElementById('p_cuotas').value) || 1;
     var freq   = document.getElementById('p_frecuencia').value;
-    // Mostrar checkbox solo si es diario
+    var fecha  = document.getElementById('p_fecha').value;
+
     document.getElementById('campo-omitir-domingos').style.display = freq === 'diario' ? '' : 'none';
     if (freq !== 'diario') document.getElementById('p_omitir_domingos').checked = false;
-    var fecha  = document.getElementById('p_fecha').value;
 
     document.getElementById('label-interes').textContent = tipo === 'porcentaje' ? 'Interés (%)' : 'Interés ($ fijo total)';
     if (!monto) { document.getElementById('calc-preview').classList.add('hidden'); return; }
@@ -354,10 +327,10 @@ function calcPreviewManual() {
     if (!monto || !cuotaMan) { calcPreview(); return; }
     var r = calcularPrestamo({ monto: monto, tipoInteres: tipo, interesValor: intVal, numCuotas: 1 });
     var cuotasCalc = Math.ceil(r.total / cuotaMan);
-    document.getElementById('p_cuotas').value = cuotasCalc;
-    document.getElementById('cv-interes').textContent = fmt(r.interesCalc);
-    document.getElementById('cv-total').textContent   = fmt(r.total);
-    document.getElementById('cv-cuota').textContent   = fmt(cuotaMan);
+    document.getElementById('p_cuotas').value         = cuotasCalc;
+    document.getElementById('cv-interes').textContent  = fmt(r.interesCalc);
+    document.getElementById('cv-total').textContent    = fmt(r.total);
+    document.getElementById('cv-cuota').textContent    = fmt(cuotaMan);
     document.getElementById('calc-preview').classList.remove('hidden');
 }
 
@@ -365,15 +338,13 @@ async function guardarPrestamo() {
     var deudor = document.getElementById('p_deudor').value;
     var monto  = document.getElementById('p_monto').value;
     var fecha  = document.getElementById('p_fecha').value;
+
     if (!deudor) { toast('Selecciona un deudor', 'error'); return; }
     if (!monto || parseFloat(monto) <= 0) { toast('Ingresa el monto', 'error'); return; }
     if (!fecha)  { toast('Ingresa la fecha de inicio', 'error'); return; }
 
-    var cuenta = document.getElementById('p_cuenta').value;
-    if (!cuenta) { toast('Debes seleccionar una cuenta de desembolso', 'error'); return; }
-
     var btn = document.getElementById('btn-guardar-prestamo');
-    btn.disabled = true;
+    btn.disabled  = true;
     btn.innerHTML = '<span class="spinner"></span> Guardando...';
 
     var form = document.getElementById('form-prestamo');
@@ -382,7 +353,7 @@ async function guardarPrestamo() {
     data.action = 'crear';
 
     var res = await apiPost('/api/prestamos.php', data);
-    btn.disabled = false;
+    btn.disabled  = false;
     btn.innerHTML = 'REGISTRAR PRÉSTAMO';
 
     if (res.ok) {

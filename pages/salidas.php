@@ -14,7 +14,6 @@ $offset     = ($page - 1) * $limit;
 
 list($anio, $mes) = explode('-', $filtroMes);
 
-// Tipos que son salidas
 $tiposSalida = ['prestamo','redito','retiro_capital','retiro','liquidacion','salida'];
 
 $where  = ["m.cobro_id=?", "m.es_entrada=0", "m.tipo IN ('prestamo','redito','retiro_capital','retiro','liquidacion','salida')", 'YEAR(m.fecha)=?', 'MONTH(m.fecha)=?'];
@@ -31,10 +30,9 @@ $stmtTotal->execute($params);
 $totalPags = ceil($stmtTotal->fetchColumn() / $limit);
 
 $stmt = $db->prepare("
-    SELECT m.*, cap.nombre AS capitalista_nombre, c.nombre AS cuenta_nombre
+    SELECT m.*, cap.nombre AS capitalista_nombre
     FROM capital_movimientos m
     LEFT JOIN capitalistas cap ON cap.id = m.capitalista_id
-    LEFT JOIN cuentas c        ON c.id   = m.cuenta_id
     WHERE $whereSQL
     ORDER BY m.fecha DESC, m.id DESC
     LIMIT $limit OFFSET $offset
@@ -46,15 +44,15 @@ $salidas = $stmt->fetchAll();
 $stmtStats = $db->prepare("
     SELECT
         COALESCE(SUM(monto), 0) AS total_mes,
-        COALESCE(SUM(CASE WHEN tipo='redito'        THEN monto ELSE 0 END),0) AS reditos,
-        COALESCE(SUM(CASE WHEN tipo='salida'        THEN monto ELSE 0 END),0) AS gastos,
+        COALESCE(SUM(CASE WHEN tipo='redito'         THEN monto ELSE 0 END),0) AS reditos,
+        COALESCE(SUM(CASE WHEN tipo='salida'         THEN monto ELSE 0 END),0) AS gastos,
         COALESCE(SUM(CASE WHEN tipo='retiro_capital' THEN monto ELSE 0 END),0) AS devoluciones,
-        COALESCE(SUM(CASE WHEN tipo='retiro'        THEN monto ELSE 0 END),0) AS retiros,
-        COALESCE(SUM(CASE WHEN tipo='prestamo'      THEN monto ELSE 0 END),0) AS prestamos_salida
+        COALESCE(SUM(CASE WHEN tipo='retiro'         THEN monto ELSE 0 END),0) AS retiros,
+        COALESCE(SUM(CASE WHEN tipo='prestamo'       THEN monto ELSE 0 END),0) AS prestamos_salida
     FROM capital_movimientos
-    WHERE cobro_id=? AND es_entrada=0 
-      AND tipo IN ('prestamo','redito','retiro_capital','retiro','liquidacion','salida') 
-      AND (anulado=0 OR anulado IS NULL) 
+    WHERE cobro_id=? AND es_entrada=0
+      AND tipo IN ('prestamo','redito','retiro_capital','retiro','liquidacion','salida')
+      AND (anulado=0 OR anulado IS NULL)
       AND YEAR(fecha)=? AND MONTH(fecha)=?
 ");
 $stmtStats->execute([$cobro, $anio, $mes]);
@@ -62,18 +60,13 @@ $stats = $stmtStats->fetch();
 
 // Capitalistas con rédito pendiente
 $stmtRedPend = $db->prepare("
-    SELECT cap.id, cap.nombre, vs.saldo_actual,
-           COALESCE(vs.total_reditos_pagados,0) AS reditos_pagados
+    SELECT cap.id, cap.nombre, vs.saldo_actual
     FROM capitalistas cap
     JOIN v_saldo_capitalistas vs ON vs.capitalista_id = cap.id
     WHERE cap.cobro_id=? AND cap.tipo='prestado' AND cap.tasa_redito>0 AND cap.estado='activo'
 ");
 $stmtRedPend->execute([$cobro]);
 $reditosPend = $stmtRedPend->fetchAll();
-
-// Cuentas y capitalistas para el form
-$cuentas = $db->prepare("SELECT id, nombre FROM cuentas WHERE cobro_id=? AND activa=1 ORDER BY nombre");
-$cuentas->execute([$cobro]); $cuentas = $cuentas->fetchAll();
 
 $capitalistas = $db->prepare("SELECT id, nombre FROM capitalistas WHERE cobro_id=? AND estado='activo' ORDER BY nombre");
 $capitalistas->execute([$cobro]); $capitalistas = $capitalistas->fetchAll();
@@ -138,11 +131,12 @@ require_once __DIR__ . '/../includes/header.php';
     <input type="month" name="mes" value="<?= htmlspecialchars($filtroMes) ?>" onchange="this.form.submit()">
     <select name="tipo" onchange="this.form.submit()">
       <option value="">Todos los tipos</option>
-      <option value="prestamo"    <?= $filtroTipo==='prestamo'    ?'selected':'' ?>>Préstamos desembolsados</option>
-      <option value="redito"      <?= $filtroTipo==='redito'      ?'selected':'' ?>>Réditos pagados</option>
-      <option value="devolucion"  <?= $filtroTipo==='devolucion'  ?'selected':'' ?>>Devoluciones</option>
-      <option value="gasto"       <?= $filtroTipo==='gasto'       ?'selected':'' ?>>Gastos operativos</option>
-      <option value="retiro_socio"<?= $filtroTipo==='retiro_socio'?'selected':'' ?>>Retiros socio</option>
+      <option value="prestamo"      <?= $filtroTipo==='prestamo'      ?'selected':'' ?>>Préstamos desembolsados</option>
+      <option value="redito"        <?= $filtroTipo==='redito'        ?'selected':'' ?>>Réditos pagados</option>
+      <option value="retiro_capital"<?= $filtroTipo==='retiro_capital'?'selected':'' ?>>Devoluciones capital</option>
+      <option value="salida"        <?= $filtroTipo==='salida'        ?'selected':'' ?>>Gastos operativos</option>
+      <option value="retiro"        <?= $filtroTipo==='retiro'        ?'selected':'' ?>>Retiros socio</option>
+      <option value="liquidacion"   <?= $filtroTipo==='liquidacion'   ?'selected':'' ?>>Liquidaciones</option>
     </select>
     <?php if ($filtroTipo): ?>
     <a href="?mes=<?= $filtroMes ?>" class="btn btn-ghost">✕ Limpiar</a>
@@ -160,18 +154,19 @@ require_once __DIR__ . '/../includes/header.php';
       <thead>
         <tr>
           <th>Fecha</th><th>Tipo</th><th>Descripción</th>
-          <th>Capitalista</th><th>Cuenta</th><th>Monto</th>
+          <th>Capitalista</th><th>Método</th><th>Monto</th>
           <?php if (canDo('puede_eliminar_salida')): ?><th></th><?php endif; ?>
         </tr>
       </thead>
       <tbody>
         <?php
         $tipoLabel = [
-          'prestamo'    => ['badge-purple', 'Préstamo'],
-          'redito'      => ['badge-orange', 'Rédito'],
-          'devolucion'  => ['badge-blue',   'Devolución'],
-          'gasto'       => ['badge-muted',  'Gasto Op.'],
-          'retiro_socio'=> ['badge-green',  'Retiro Socio'],
+          'prestamo'     => ['badge-purple', 'Préstamo'],
+          'redito'       => ['badge-orange', 'Rédito'],
+          'retiro_capital'=> ['badge-blue',  'Devolución'],
+          'salida'       => ['badge-muted',  'Gasto Op.'],
+          'retiro'       => ['badge-green',  'Retiro Socio'],
+          'liquidacion'  => ['badge-red',    'Liquidación'],
         ];
         foreach ($salidas as $s):
           [$cls, $lbl] = $tipoLabel[$s['tipo']] ?? ['badge-muted', $s['tipo']];
@@ -179,14 +174,19 @@ require_once __DIR__ . '/../includes/header.php';
         ?>
         <tr style="<?= $anulado ? 'opacity:0.45;text-decoration:line-through' : '' ?>">
           <td class="text-mono"><?= date('d M Y', strtotime($s['fecha'])) ?></td>
-          <td><span class="badge <?= $cls ?>"><?= $lbl ?></span><?= $anulado ? ' <span class="badge badge-muted" style="font-size:0.6rem">ANULADO</span>' : '' ?></td>
+          <td>
+            <span class="badge <?= $cls ?>"><?= $lbl ?></span>
+            <?= $anulado ? ' <span class="badge badge-muted" style="font-size:0.6rem">ANULADO</span>' : '' ?>
+          </td>
           <td><?= htmlspecialchars($s['descripcion'] ?? '—') ?></td>
           <td><?= htmlspecialchars($s['capitalista_nombre'] ?? '—') ?></td>
-          <td><?= htmlspecialchars($s['cuenta_nombre'] ?? '—') ?></td>
+          <td><span class="badge badge-muted"><?= ucfirst($s['metodo_pago'] ?? 'efectivo') ?></span></td>
           <td class="red text-mono fw-600"><?= fmt($s['monto']) ?></td>
           <?php if (canDo('puede_eliminar_salida')): ?>
           <td>
+            <?php if (!$anulado): ?>
             <button class="btn btn-ghost btn-sm" onclick="eliminarSalida(<?= $s['id'] ?>)">✕</button>
+            <?php endif; ?>
           </td>
           <?php endif; ?>
         </tr>
@@ -251,21 +251,10 @@ require_once __DIR__ . '/../includes/header.php';
             <input type="date" name="fecha" value="<?= date('Y-m-d') ?>">
           </div>
           <div class="field">
-            <label>Cuenta <span class="required">*</span></label>
-            <select name="cuenta_id" required>
-              <option value="">— Seleccionar —</option>
-              <?php foreach ($cuentas as $c): ?>
-              <option value="<?= $c['id'] ?>"><?= htmlspecialchars($c['nombre']) ?></option>
-              <?php endforeach; ?>
-            </select>
-          </div>
-          <div class="field">
-            <label>Método</label>
+            <label>Método de pago</label>
             <select name="metodo_pago">
               <option value="efectivo">Efectivo</option>
-              <option value="transferencia">Transferencia</option>
-              <option value="nequi">Nequi</option>
-              <option value="bancolombia">Bancolombia</option>
+              <option value="banco">Banco</option>
             </select>
           </div>
           <div class="field field-span2">
@@ -286,13 +275,13 @@ require_once __DIR__ . '/../includes/header.php';
 
 <script>
 function toggleCamposSalida() {
-    var tipo = document.getElementById('salida-tipo').value;
+    var tipo   = document.getElementById('salida-tipo').value;
     var conCap = ['redito_capitalista','devolucion_capital','liquidacion'];
     document.getElementById('campo-capitalista').style.display = conCap.includes(tipo) ? 'block' : 'none';
 }
 
 function pagarRedito(capId, nombre) {
-    document.getElementById('salida-tipo').value = 'redito_capitalista';
+    document.getElementById('salida-tipo').value      = 'redito_capitalista';
     toggleCamposSalida();
     document.getElementById('salida-capitalista').value = capId;
     openModal('modal-salida');
@@ -307,9 +296,9 @@ async function guardarSalida() {
     var btn = document.getElementById('btn-salida');
     btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> Guardando...';
 
-    var data = Object.fromEntries(new FormData(document.getElementById('form-salida')));
+    var data    = Object.fromEntries(new FormData(document.getElementById('form-salida')));
     data.action = 'crear';
-    var res = await apiPost('/api/salidas.php', data);
+    var res     = await apiPost('/api/salidas.php', data);
     btn.disabled = false; btn.innerHTML = 'REGISTRAR';
 
     if (res.ok) {

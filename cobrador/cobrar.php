@@ -23,14 +23,12 @@ if ($deudor_id) {
         // Cargar préstamos activos con sus cuotas
         $stmtP = $db->prepare("
             SELECT p.*,
-                cap.nombre AS capitalista_nombre,
                 (SELECT COUNT(*) FROM cuotas WHERE prestamo_id=p.id AND estado IN ('pendiente','parcial')) AS cuotas_pendientes,
                 (SELECT COUNT(*) FROM cuotas WHERE prestamo_id=p.id AND estado='pagado') AS cuotas_pagadas,
                 (SELECT COUNT(*) FROM cuotas WHERE prestamo_id=p.id) AS cuotas_total
             FROM prestamos p
-            LEFT JOIN capitalistas cap ON cap.id = p.capitalista_id
             WHERE p.deudor_id = ? AND p.cobro_id = ?
-              AND p.estado IN ('activo','en_mora','en_acuerdo')
+            AND p.estado IN ('activo','en_mora','en_acuerdo')
             ORDER BY p.created_at DESC
         ");
         $stmtP->execute([$deudor_id, $cobro]);
@@ -85,10 +83,6 @@ $stmtD = $db->prepare("
 $stmtD->execute([$cobro, $cobro]);
 $deudores = $stmtD->fetchAll();
 
-// Cuentas
-$stmtCuentas = $db->prepare("SELECT id, nombre, tipo FROM cuentas WHERE cobro_id=? AND activa=1 ORDER BY nombre");
-$stmtCuentas->execute([$cobro]);
-$cuentas = $stmtCuentas->fetchAll();
 ?>
 
 <div class="cob-header">
@@ -225,9 +219,6 @@ $cuentas = $stmtCuentas->fetchAll();
                 <div>
                     <div style="font-family:var(--font-mono);font-size:0.65rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px">
                         Préstamo #<?= $prest['id'] ?>
-                        <?php if ($prest['capitalista_nombre']): ?>
-                         · <?= htmlspecialchars($prest['capitalista_nombre']) ?>
-                        <?php endif; ?>
                     </div>
                     <div style="font-size:1.3rem;font-weight:700;color:<?= $estadoColor ?>">
                         $<?= number_format($prest['monto_prestado'], 0, ',', '.') ?>
@@ -337,22 +328,12 @@ $cuentas = $stmtCuentas->fetchAll();
                    style="font-size:1.8rem;font-weight:700;text-align:center;color:var(--accent)">
         </div>
 
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.5rem;margin-bottom:0.75rem">
+        <div style="margin-bottom:0.75rem">
             <div class="field-lg" style="margin:0">
-                <label>Cuenta</label>
-                <select id="pago-cuenta">
-                    <?php foreach ($cuentas as $c): ?>
-                    <option value="<?= $c['id'] ?>"><?= htmlspecialchars($c['nombre']) ?></option>
-                    <?php endforeach; ?>
-                </select>
-            </div>
-            <div class="field-lg" style="margin:0">
-                <label>Método</label>
+                <label>Método de pago</label>
                 <select id="pago-metodo">
                     <option value="efectivo">Efectivo</option>
-                    <option value="transferencia">Transferencia</option>
-                    <option value="nequi">Nequi</option>
-                    <option value="daviplata">Daviplata</option>
+                    <option value="banco">Banco</option>
                 </select>
             </div>
         </div>
@@ -411,19 +392,17 @@ function cancelarPago() {
 }
 
 async function registrarPago() {
-    const monto    = parseFloat(document.getElementById('pago-monto').value) || 0;
-    const cuotaId  = document.getElementById('pago-cuota-id').value;
-    const prestId  = document.getElementById('pago-prestamo-id').value;
-    const cuentaId = document.getElementById('pago-cuenta').value;
-    const metodo   = document.getElementById('pago-metodo').value;
-    const fecha    = document.getElementById('pago-fecha').value;
+    const monto   = parseFloat(document.getElementById('pago-monto').value) || 0;
+    const cuotaId = document.getElementById('pago-cuota-id').value;
+    const prestId = document.getElementById('pago-prestamo-id').value;
+    const metodo  = document.getElementById('pago-metodo').value;
+    const fecha   = document.getElementById('pago-fecha').value;
 
     if (!monto || monto <= 0) { alert('Ingresa el monto'); return; }
-    if (!cuentaId)            { alert('Selecciona la cuenta'); return; }
 
     const btn = document.getElementById('btn-registrar-pago');
     btn.textContent = '⏳ Guardando...';
-    btn.disabled = true;
+    btn.disabled    = true;
 
     try {
         const res = await fetch('/api/prestamos.php', {
@@ -434,7 +413,6 @@ async function registrarPago() {
                 prestamo_id : parseInt(prestId),
                 cuota_id    : parseInt(cuotaId),
                 monto_pagado: monto,
-                cuenta_id   : parseInt(cuentaId),
                 metodo_pago : metodo,
                 fecha_pago  : fecha
             })
@@ -442,18 +420,18 @@ async function registrarPago() {
         const data = await res.json();
 
         if (data.ok) {
-            btn.textContent = '✓ Pago registrado';
+            btn.textContent      = '✓ Pago registrado';
             btn.style.background = '#22c55e';
             setTimeout(() => window.location.reload(), 1000);
         } else {
             alert(data.msg || 'Error al registrar el pago');
             btn.textContent = '💰 REGISTRAR PAGO';
-            btn.disabled = false;
+            btn.disabled    = false;
         }
     } catch(e) {
         alert('Error de conexión');
         btn.textContent = '💰 REGISTRAR PAGO';
-        btn.disabled = false;
+        btn.disabled    = false;
     }
 }
 </script>

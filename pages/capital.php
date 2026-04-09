@@ -77,10 +77,6 @@ foreach ($capitalistas as &$cap) {
 }
 unset($cap);
 
-// Para el form
-$cuentas = $db->prepare("SELECT id, nombre FROM cuentas WHERE cobro_id=? AND activa=1 ORDER BY nombre");
-$cuentas->execute([$cobro]); $cuentas = $cuentas->fetchAll();
-
 $pageTitle   = 'Capital';
 $pageSection = 'Capital';
 require_once __DIR__ . '/../includes/header.php';
@@ -302,13 +298,11 @@ require_once __DIR__ . '/../includes/header.php';
               <input type="number" name="monto_inicial" placeholder="0" step="100000">
             </div>
             <div class="field">
-              <label>Cuenta donde ingresa</label>
-              <select name="cuenta_id">
-                <option value="">— Seleccionar —</option>
-                <?php foreach ($cuentas as $c): ?>
-                <option value="<?= $c['id'] ?>"><?= htmlspecialchars($c['nombre']) ?></option>
-                <?php endforeach; ?>
-              </select>
+                <label>Método de pago</label>
+                <select name="metodo_pago">
+                    <option value="efectivo">Efectivo</option>
+                    <option value="banco">Banco</option>
+                </select>
             </div>
             <div class="field">
               <label>Tipo de rédito</label>
@@ -369,13 +363,11 @@ require_once __DIR__ . '/../includes/header.php';
             <input type="date" name="fecha" value="<?= date('Y-m-d') ?>">
           </div>
           <div class="field">
-            <label>Cuenta <span class="required">*</span></label>
-            <select name="cuenta_id" required>
-              <option value="">— Seleccionar cuenta —</option>
-              <?php foreach ($cuentas as $c): ?>
-              <option value="<?= $c['id'] ?>"><?= htmlspecialchars($c['nombre']) ?></option>
-              <?php endforeach; ?>
-            </select>
+              <label>Método de pago</label>
+              <select name="metodo_pago">
+                  <option value="efectivo">Efectivo</option>
+                  <option value="banco">Banco</option>
+              </select>
           </div>
           <div class="field field-span2">
             <label>Descripción</label>
@@ -453,7 +445,6 @@ async function guardarMovimiento() {
     const btn  = document.getElementById('btn-mov');
     const data = Object.fromEntries(new FormData(document.getElementById('form-movimiento')));
     if (!data.monto || parseFloat(data.monto) <= 0) { toast('Ingresa el monto', 'error'); return; }
-    if (!data.cuenta_id) { toast('Selecciona la cuenta', 'error'); return; }
     btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>';
     const res = await apiPost('/api/capital.php', { action: 'movimiento', ...data });
     btn.disabled = false; btn.innerHTML = 'REGISTRAR';

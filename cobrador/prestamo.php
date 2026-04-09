@@ -19,10 +19,6 @@ if ($deudor_id) {
     $deudorPre = $stmt->fetch();
 }
 
-// Cuentas disponibles
-$stmtCuentas = $db->prepare("SELECT id, nombre, tipo FROM cuentas WHERE cobro_id=? AND activa=1 ORDER BY nombre");
-$stmtCuentas->execute([$cobro]);
-$cuentas = $stmtCuentas->fetchAll();
 // % papelería del cobro
 $stmtPctPap = $db->prepare("SELECT papeleria_pct FROM cobros WHERE id=?");
 $stmtPctPap->execute([$cobro]);
@@ -148,12 +144,10 @@ $deudores = $stmtD->fetchAll();
     </div>
 
     <div class="field-lg">
-        <label>Cuenta de desembolso *</label>
-        <select id="p_cuenta">
-            <option value="">— Seleccionar —</option>
-            <?php foreach ($cuentas as $c): ?>
-            <option value="<?= $c['id'] ?>"><?= htmlspecialchars($c['nombre']) ?></option>
-            <?php endforeach; ?>
+        <label>Método de pago</label>
+        <select id="p_metodo">
+            <option value="efectivo">Efectivo</option>
+            <option value="banco">Banco</option>
         </select>
     </div>
 
@@ -283,12 +277,10 @@ function calcularPreview() {
 
 async function guardarPrestamo() {
     const monto   = parseFloat(document.getElementById('p_monto').value) || 0;
-    const cuenta  = document.getElementById('p_cuenta').value;
     const cuotas  = parseInt(document.getElementById('p_cuotas').value) || 1;
     const fecha   = document.getElementById('p_fecha').value;
 
     if (!monto || monto <= 0) { alert('Ingresa el monto a prestar'); return; }
-    if (!cuenta)              { alert('Selecciona la cuenta de desembolso'); return; }
     if (!fecha)               { alert('Ingresa la fecha de inicio'); return; }
 
     const freq     = document.getElementById('p_frecuencia').value;
@@ -327,7 +319,7 @@ async function guardarPrestamo() {
                 frecuencia_pago     : freq,
                 num_cuotas          : cuotas,
                 fecha_inicio        : fecha,
-                cuenta_desembolso_id: parseInt(cuenta),
+                metodo_pago: document.getElementById('p_metodo').value,
                 omitir_domingos     : domingos ? 1 : 0,
                 papeleria_pct: <?= $cobroData['papeleria_pct'] ?? 10 ?>,
                 observaciones       : document.getElementById('p_obs').value.trim(),

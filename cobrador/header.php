@@ -3,13 +3,12 @@ require_once __DIR__ . '/../config/auth.php';
 requireLogin();
 
 // Solo cobradores — admins van al sistema principal
-if (!in_array($_SESSION['rol'], ['cobrador', 'admin', 'superadmin'])) {
-    header('Location: /login.php'); exit;
+if ($_SESSION['rol'] !== 'cobrador') {
+    header('Location: /pages/dashboard.php'); exit;
 }
 
 $cobro = cobroActivo();
 if (!$cobro) {
-    // Cobrador sin cobro asignado
     header('Location: /login.php?error=sin_cobro'); exit;
 }
 ?>

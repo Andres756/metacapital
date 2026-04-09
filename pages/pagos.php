@@ -7,12 +7,12 @@ $db    = getDB();
 $cobro = cobroActivo();
 
 // Filtros historial
-$buscar     = trim($_GET['q'] ?? '');
-$filtroFecha= $_GET['fecha'] ?? date('Y-m-d');
-$verTodos   = isset($_GET['todos']);
-$page       = max(1, (int)($_GET['page'] ?? 1));
-$limit      = 20;
-$offset     = ($page - 1) * $limit;
+$buscar      = trim($_GET['q'] ?? '');
+$filtroFecha = $_GET['fecha'] ?? date('Y-m-d');
+$verTodos    = isset($_GET['todos']);
+$page        = max(1, (int)($_GET['page'] ?? 1));
+$limit       = 20;
+$offset      = ($page - 1) * $limit;
 
 // Preselección desde URL
 $prestamoId = (int)($_GET['prestamo'] ?? 0);
@@ -51,7 +51,7 @@ $stmtHoy = $db->prepare("
 $stmtHoy->execute([$cobro]);
 $cuotasHoy = $stmtHoy->fetchAll();
 
-// Historial de pagos
+// Historial de pagos — SIN JOIN a cuentas
 $whereH  = ['pg.cobro_id = ?'];
 $paramsH = [$cobro];
 if ($buscar) {
@@ -64,19 +64,22 @@ if (!$verTodos) {
 }
 $whereHSQL = implode(' AND ', $whereH);
 
-$stmtTotal = $db->prepare("SELECT COUNT(*) FROM pagos pg JOIN deudores d ON d.id=pg.deudor_id WHERE $whereHSQL AND (pg.anulado=0 OR pg.anulado IS NULL)");
+$stmtTotal = $db->prepare("
+    SELECT COUNT(*) FROM pagos pg
+    JOIN deudores d ON d.id=pg.deudor_id
+    WHERE $whereHSQL AND (pg.anulado=0 OR pg.anulado IS NULL)
+");
 $stmtTotal->execute($paramsH);
 $totalPags = ceil($stmtTotal->fetchColumn() / $limit);
 
 $stmtH = $db->prepare("
-    SELECT pg.*, d.nombre AS deudor, c.nombre AS cuenta, u.nombre AS usuario,
+    SELECT pg.*, d.nombre AS deudor, u.nombre AS usuario,
            cu.numero_cuota, pr.monto_prestado
     FROM pagos pg
-    JOIN deudores d  ON d.id  = pg.deudor_id
-    JOIN cuotas cu   ON cu.id = pg.cuota_id
+    JOIN deudores d   ON d.id  = pg.deudor_id
+    JOIN cuotas cu    ON cu.id = pg.cuota_id
     JOIN prestamos pr ON pr.id = pg.prestamo_id
-    LEFT JOIN cuentas c  ON c.id  = pg.cuenta_id
-    LEFT JOIN usuarios u ON u.id  = pg.usuario_id
+    LEFT JOIN usuarios u ON u.id = pg.usuario_id
     WHERE $whereHSQL AND (pg.anulado=0 OR pg.anulado IS NULL)
     ORDER BY pg.created_at DESC
     LIMIT $limit OFFSET $offset
@@ -86,20 +89,14 @@ $historial = $stmtH->fetchAll();
 
 // Stats del día
 $stmtStats = $db->prepare("
-    SELECT
-        COUNT(*)                    AS total_pagos,
-        COALESCE(SUM(monto_pagado),0) AS total_monto
+    SELECT COUNT(*) AS total_pagos,
+           COALESCE(SUM(monto_pagado),0) AS total_monto
     FROM pagos WHERE cobro_id=? AND fecha_pago=CURDATE() AND (anulado=0 OR anulado IS NULL)
 ");
 $stmtStats->execute([$cobro]);
 $statsHoy = $stmtStats->fetch();
 
-// Cuentas para el form
-$cuentasQ = $db->prepare("SELECT id, nombre, tipo FROM cuentas WHERE cobro_id=? AND activa=1 ORDER BY nombre");
-$cuentasQ->execute([$cobro]);
-$cuentas = $cuentasQ->fetchAll();
-
-// Buscar préstamos activos (para búsqueda en modal)
+// Préstamos activos para búsqueda
 $activosQ = $db->prepare("
     SELECT p.id, p.saldo_pendiente, p.valor_cuota, p.estado, d.nombre AS deudor, d.telefono
     FROM prestamos p JOIN deudores d ON d.id=p.deudor_id
@@ -202,8 +199,10 @@ require_once __DIR__ . '/../includes/header.php';
       <div style="flex:1;min-width:0">
         <div style="font-weight:600;font-size:0.82rem"><?= htmlspecialchars($pg['deudor']) ?></div>
         <div style="font-family:var(--font-mono);font-size:0.65rem;color:var(--muted)">
-          Cuota #<?= $pg['numero_cuota'] ?> · <?= htmlspecialchars($pg['cuenta'] ?? 'Efectivo') ?> ·
-          <span class="badge badge-muted" style="font-size:0.55rem"><?= ucfirst($pg['metodo_pago']) ?></span>
+          Cuota #<?= $pg['numero_cuota'] ?> ·
+          <span class="badge badge-muted" style="font-size:0.55rem">
+            <?= ucfirst($pg['metodo_pago'] ?? 'efectivo') ?>
+          </span>
         </div>
       </div>
       <div style="text-align:right;margin-right:0.5rem">
@@ -224,7 +223,7 @@ require_once __DIR__ . '/../includes/header.php';
   <?php endif; ?>
 </div>
 
-</div><!-- /grid -->
+</div>
 
 <!-- ====== MODAL REGISTRAR PAGO ====== -->
 <div class="modal-overlay" id="modal-pago">
@@ -295,22 +294,10 @@ require_once __DIR__ . '/../includes/header.php';
               <input type="date" name="fecha_pago" id="pago-fecha" value="<?= date('Y-m-d') ?>">
             </div>
             <div class="field">
-              <label>Cuenta <span class="required">*</span></label>
-              <select name="cuenta_id" id="pago-cuenta" required>
-                <option value="">— Seleccionar —</option>
-                <?php foreach ($cuentas as $c): ?>
-                <option value="<?= $c['id'] ?>"><?= htmlspecialchars($c['nombre']) ?></option>
-                <?php endforeach; ?>
-              </select>
-            </div>
-            <div class="field">
-              <label>Método</label>
+              <label>Método de pago</label>
               <select name="metodo_pago">
                 <option value="efectivo">Efectivo</option>
-                <option value="nequi">Nequi</option>
-                <option value="transferencia">Transferencia</option>
-                <option value="bancolombia">Bancolombia</option>
-                <option value="daviplata">Daviplata</option>
+                <option value="banco">Banco</option>
               </select>
             </div>
             <div class="field field-span2">
@@ -350,29 +337,25 @@ require_once __DIR__ . '/../includes/header.php';
 <?php require_once __DIR__ . '/../includes/footer.php'; ?>
 
 <script>
-// ---- DATOS PRESTAMOS (para busqueda rapida) ----
 var prestamosData = <?= json_encode($prestamosActivos) ?>;
 
 function filtrarPrestamos(q) {
     q = q.toLowerCase().trim();
     document.querySelectorAll('#lista-prestamos .schedule-row').forEach(function(row) {
         var nombre = row.dataset.nombre || '';
-        var id     = row.dataset.id || '';
+        var id     = row.dataset.id     || '';
         row.style.display = (!q || nombre.includes(q) || id.includes(q)) ? '' : 'none';
     });
 }
 
 function seleccionarPrestamo(id, nombre, saldo, valorCuota) {
-    document.getElementById('pago-prestamo-id').value  = id;
-    document.getElementById('pago-avatar').textContent = nombre.charAt(0).toUpperCase();
-    document.getElementById('pago-deudor-nombre').textContent = nombre;
-    document.getElementById('pago-deudor-info').textContent   = 'Préstamo #' + id + ' · Saldo: ' + fmt(saldo);
-
-    document.getElementById('paso1').style.display = 'none';
-    document.getElementById('paso2').style.display = 'block';
-    document.getElementById('btn-registrar-pago').style.display = 'inline-flex';
-
-    // Cargar cuotas del préstamo
+    document.getElementById('pago-prestamo-id').value          = id;
+    document.getElementById('pago-avatar').textContent         = nombre.charAt(0).toUpperCase();
+    document.getElementById('pago-deudor-nombre').textContent  = nombre;
+    document.getElementById('pago-deudor-info').textContent    = 'Préstamo #' + id + ' · Saldo: ' + fmt(saldo);
+    document.getElementById('paso1').style.display             = 'none';
+    document.getElementById('paso2').style.display             = 'block';
+    document.getElementById('btn-registrar-pago').style.display= 'inline-flex';
     cargarCuotas(id);
 }
 
@@ -383,10 +366,10 @@ async function cargarCuotas(prestamoId) {
     sel.innerHTML = '';
     if (res.ok && res.cuotas.length) {
         res.cuotas.forEach(function(c) {
-            var opt = document.createElement('option');
-            opt.value = c.id;
+            var opt       = document.createElement('option');
+            opt.value     = c.id;
             opt.dataset.saldo = c.saldo_cuota;
-            opt.textContent = 'Cuota #' + c.numero_cuota + ' — ' + c.fecha_vencimiento + ' — ' + fmt(c.saldo_cuota) + (c.estado==='parcial'?' (PARCIAL)':'');
+            opt.textContent   = 'Cuota #' + c.numero_cuota + ' — ' + c.fecha_vencimiento + ' — ' + fmt(c.saldo_cuota) + (c.estado==='parcial' ? ' (PARCIAL)' : '');
             sel.appendChild(opt);
         });
         actualizarMontoCuota(sel);
@@ -405,11 +388,11 @@ function actualizarMontoCuota(sel) {
 document.getElementById('pago-monto').addEventListener('input', actualizarPreview);
 
 function actualizarPreview() {
-    var sel    = document.getElementById('pago-cuota-select');
-    var opt    = sel.options[sel.selectedIndex];
-    var saldo  = parseFloat(opt ? opt.dataset.saldo : 0) || 0;
-    var monto  = parseFloat(document.getElementById('pago-monto').value) || 0;
-    var pend   = Math.max(0, saldo - monto);
+    var sel   = document.getElementById('pago-cuota-select');
+    var opt   = sel.options[sel.selectedIndex];
+    var saldo = parseFloat(opt ? opt.dataset.saldo : 0) || 0;
+    var monto = parseFloat(document.getElementById('pago-monto').value) || 0;
+    var pend  = Math.max(0, saldo - monto);
 
     document.getElementById('prev-saldo-cuota').textContent = fmt(saldo);
     document.getElementById('prev-monto').textContent       = fmt(monto);
@@ -419,21 +402,19 @@ function actualizarPreview() {
 }
 
 function volverPaso1() {
-    document.getElementById('paso1').style.display = 'block';
-    document.getElementById('paso2').style.display = 'none';
-    document.getElementById('btn-registrar-pago').style.display = 'none';
-    document.getElementById('buscar-prestamo').value = '';
+    document.getElementById('paso1').style.display             = 'block';
+    document.getElementById('paso2').style.display             = 'none';
+    document.getElementById('btn-registrar-pago').style.display= 'none';
+    document.getElementById('buscar-prestamo').value           = '';
     filtrarPrestamos('');
 }
 
 function pagarRapido(prestamoId, cuotaId, monto, deudor) {
     openModal('modal-pago');
-    // Esperar a que abra el modal y luego seleccionar
     setTimeout(function() {
         seleccionarPrestamo(prestamoId, deudor, monto, monto);
         setTimeout(function() {
-            var sel = document.getElementById('pago-cuota-select');
-            // Esperar que carguen las cuotas
+            var sel     = document.getElementById('pago-cuota-select');
             var intento = setInterval(function() {
                 for (var i = 0; i < sel.options.length; i++) {
                     if (sel.options[i].value == cuotaId) {
@@ -453,22 +434,20 @@ async function registrarPago() {
     var prestamoId = document.getElementById('pago-prestamo-id').value;
     var cuotaId    = document.getElementById('pago-cuota-select').value;
     var monto      = document.getElementById('pago-monto').value;
-    var cuentaId   = document.getElementById('pago-cuenta').value;
 
     if (!prestamoId) { toast('Selecciona un préstamo', 'error'); return; }
-    if (!cuotaId)    { toast('Selecciona la cuota', 'error'); return; }
+    if (!cuotaId)    { toast('Selecciona la cuota',    'error'); return; }
     if (!monto || parseFloat(monto) <= 0) { toast('Ingresa el monto', 'error'); return; }
-    if (!cuentaId)   { toast('Selecciona la cuenta donde entró el dinero', 'error'); return; }
 
     var btn = document.getElementById('btn-registrar-pago');
-    btn.disabled = true;
+    btn.disabled  = true;
     btn.innerHTML = '<span class="spinner"></span> Registrando...';
 
-    var data = Object.fromEntries(new FormData(document.getElementById('form-pago')));
+    var data   = Object.fromEntries(new FormData(document.getElementById('form-pago')));
     data.action = 'pagar';
 
     var res = await apiPost('/api/prestamos.php', data);
-    btn.disabled = false;
+    btn.disabled  = false;
     btn.innerHTML = 'REGISTRAR PAGO';
 
     if (res.ok) {
@@ -484,7 +463,6 @@ function filtrarFecha(val) {
     window.location = '?fecha=' + val;
 }
 
-// Autoabrir si viene con prestamo preseleccionado
 <?php if ($prestamoId && $prestamoInfo): ?>
 document.addEventListener('DOMContentLoaded', function() {
     openModal('modal-pago');
