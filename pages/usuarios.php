@@ -22,10 +22,10 @@ $usuarios = $stmtU->fetchAll();
 
 // Permisos del cobro activo por usuario
 $stmtP = $db->prepare("
-    SELECT uc.*, u.nombre AS usuario_nombre
+    SELECT uc.*, u.nombre AS usuario_nombre, u.rol
     FROM usuario_cobro uc
     JOIN usuarios u ON u.id = uc.usuario_id
-    WHERE uc.cobro_id = ?
+    WHERE uc.cobro_id = ? AND u.rol != 'cobrador'
     ORDER BY u.nombre
 ");
 $stmtP->execute([$cobro]);
@@ -95,24 +95,32 @@ require_once __DIR__ . '/../includes/header.php';
             </span>
           </td>
           <td>
-            <div class="btn-group">
-              <button class="btn btn-ghost btn-sm"
-                onclick="editarUsuario(<?= htmlspecialchars(json_encode($u)) ?>)">
-                Editar
-              </button>
-              <?php if ($u['rol'] !== 'superadmin'): ?>
-              <button class="btn btn-ghost btn-sm"
-                onclick="verPermisos(<?= $u['id'] ?>, '<?= htmlspecialchars(addslashes($u['nombre'])) ?>')">
-                Permisos
-              </button>
-              <?php if (!$esMismo): ?>
-              <button class="btn btn-ghost btn-sm red"
-                onclick="toggleActivo(<?= $u['id'] ?>, <?= $u['activo'] ?>)">
-                <?= $u['activo'] ? 'Desactivar' : 'Activar' ?>
-              </button>
-              <?php endif; ?>
-              <?php endif; ?>
-            </div>
+              <div class="btn-group">
+                  <button class="btn btn-ghost btn-sm"
+                      onclick="editarUsuario(<?= htmlspecialchars(json_encode($u)) ?>)">
+                      Editar
+                  </button>
+                  <?php if ($u['rol'] !== 'superadmin'): ?>
+                      <?php if ($u['rol'] === 'cobrador'): ?>
+                      <button class="btn btn-ghost btn-sm"
+                          onclick="verCobros(<?= $u['id'] ?>, '<?= htmlspecialchars(addslashes($u['nombre'])) ?>', '<?= htmlspecialchars($u['cobros_ids'] ?? '') ?>')">
+                          Cobros
+                      </button>
+                      <?php else: ?>
+                      <button class="btn btn-ghost btn-sm"
+                          onclick="verPermisos(<?= $u['id'] ?>, '<?= htmlspecialchars(addslashes($u['nombre'])) ?>')">
+                          Permisos
+                      </button>
+                      <?php endif; ?>
+                      <?php if (!$esMismo): ?>
+                      <button class="btn btn-ghost btn-sm <?= !$u['activo'] ? 'green' : '' ?>"
+                          style="<?= $u['activo'] ? 'color:#ef4444' : '' ?>"
+                          onclick="toggleActivo(<?= $u['id'] ?>, <?= $u['activo'] ?>)">
+                          <?= $u['activo'] ? 'Desactivar' : 'Activar' ?>
+                      </button>
+                      <?php endif; ?>
+                  <?php endif; ?>
+              </div>
           </td>
         </tr>
         <?php endforeach; ?>
@@ -162,12 +170,21 @@ require_once __DIR__ . '/../includes/header.php';
             </span>
           </td>
           <?php endforeach; ?>
-          <td>
-            <button class="btn btn-ghost btn-sm"
-              onclick="verPermisos(<?= $p['usuario_id'] ?>, '<?= htmlspecialchars(addslashes($p['usuario_nombre'])) ?>')">
-              Editar
-            </button>
-          </td>
+        <td>
+            <?php 
+            $rolUsuario = $p['rol'] ?? 'admin';
+            if ($rolUsuario === 'cobrador'): ?>
+                <button class="btn btn-ghost btn-sm"
+                  onclick="verCobros(<?= $p['usuario_id'] ?>, '<?= htmlspecialchars(addslashes($p['usuario_nombre'])) ?>', '')">
+                  Cobros
+                </button>
+            <?php else: ?>
+                <button class="btn btn-ghost btn-sm"
+                  onclick="verPermisos(<?= $p['usuario_id'] ?>, '<?= htmlspecialchars(addslashes($p['usuario_nombre'])) ?>')">
+                  Editar
+                </button>
+            <?php endif; ?>
+        </td>
         </tr>
         <?php endforeach; ?>
       </tbody>
@@ -209,12 +226,22 @@ require_once __DIR__ . '/../includes/header.php';
               <option value="superadmin">Superadmin</option>
             </select>
           </div>
+          <!-- Reemplazar campo-cobros por: -->
           <div class="field field-span2" id="campo-cobros">
-            <label>Asignar al cobro activo</label>
-            <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;font-family:var(--font-mono);font-size:0.78rem">
-              <input type="checkbox" name="asignar_cobro" id="u-asignar" value="1" checked>
-              Asignar a cobro actual
-            </label>
+              <label>Cobros a asignar</label>
+              <div id="lista-cobros-crear" style="display:grid;gap:0.4rem;max-height:200px;overflow-y:auto">
+                  <?php foreach ($cobros as $cob): ?>
+                  <label style="display:flex;align-items:center;gap:0.6rem;padding:0.6rem 0.75rem;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);cursor:pointer;font-size:0.82rem">
+                      <input type="checkbox" name="cobros_crear[]" value="<?= $cob['id'] ?>"
+                            <?= $cob['id'] == $cobro ? 'checked' : '' ?>
+                            style="width:16px;height:16px;accent-color:var(--accent)">
+                      <?= htmlspecialchars($cob['nombre']) ?>
+                  </label>
+                  <?php endforeach; ?>
+              </div>
+              <div style="font-family:var(--font-mono);font-size:0.65rem;color:var(--muted);margin-top:0.35rem">
+                  Solo visible para rol Cobrador
+              </div>
           </div>
         </div>
       </form>
@@ -309,6 +336,42 @@ require_once __DIR__ . '/../includes/header.php';
   </div>
 </div>
 
+<!-- ====== MODAL COBROS COBRADOR ====== -->
+<div class="modal-overlay" id="modal-cobros">
+  <div class="modal" style="max-width:480px">
+    <div class="modal-header">
+      <h2 id="titulo-cobros">COBROS ASIGNADOS</h2>
+      <button class="modal-close" onclick="closeModal('modal-cobros')">✕</button>
+    </div>
+    <div class="modal-body">
+      <form id="form-cobros">
+        <input type="hidden" name="usuario_id" id="c-uid">
+        <p style="font-family:var(--font-mono);font-size:0.72rem;color:var(--muted);margin-bottom:1rem">
+          Selecciona los cobros a los que tendrá acceso este cobrador.
+          Si tiene más de uno, verá una pantalla de selección al iniciar sesión.
+        </p>
+        <div style="display:grid;gap:0.5rem">
+          <?php foreach ($cobros as $cob): ?>
+          <label style="display:flex;align-items:center;gap:0.75rem;padding:0.75rem 1rem;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);cursor:pointer">
+            <input type="checkbox" name="cobros[]" value="<?= $cob['id'] ?>"
+                   id="cob-<?= $cob['id'] ?>"
+                   style="width:18px;height:18px;cursor:pointer;flex-shrink:0;accent-color:var(--accent)">
+            <div>
+              <div style="font-weight:600;font-size:0.9rem"><?= htmlspecialchars($cob['nombre']) ?></div>
+              <div style="font-family:var(--font-mono);font-size:0.65rem;color:var(--muted)">ID #<?= $cob['id'] ?></div>
+            </div>
+          </label>
+          <?php endforeach; ?>
+        </div>
+      </form>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('modal-cobros')">Cancelar</button>
+      <button class="btn btn-primary" id="btn-cobros" onclick="guardarCobros()">GUARDAR</button>
+    </div>
+  </div>
+</div>
+
 <?php require_once __DIR__ . '/../includes/footer.php'; ?>
 
 <script>
@@ -323,6 +386,8 @@ function editarUsuario(u) {
     document.getElementById('u-password').value = '';
     document.getElementById('label-password').innerHTML = 'Nueva contraseña';
     document.getElementById('hint-password').style.display = 'block';
+    // Disparar change para mostrar/ocultar cobros según rol
+    document.getElementById('u-rol').dispatchEvent(new Event('change'));
     openModal('modal-usuario');
 }
 
@@ -334,10 +399,18 @@ async function guardarUsuario() {
     if (esNuevo && !data.password) { toast('La contraseña es obligatoria', 'error'); return; }
     if (data.password && data.password.length < 6) { toast('La contraseña debe tener al menos 6 caracteres', 'error'); return; }
 
+    // Si es cobrador, recoger cobros seleccionados
+    if (data.rol === 'cobrador') {
+        var checks = document.querySelectorAll('#lista-cobros-crear input:checked');
+        data.cobros = Array.from(checks).map(cb => cb.value);
+        delete data['cobros_crear[]'];
+    }
+
     data.action = data.id ? 'editar' : 'crear';
     btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>';
     var res = await apiPost('/api/usuarios.php', data);
     btn.disabled = false; btn.innerHTML = 'GUARDAR';
+
     if (res.ok) {
         toast(res.msg);
         closeModal('modal-usuario');
@@ -371,6 +444,13 @@ function verPermisos(uid, nombre) {
     });
     openModal('modal-permisos');
 }
+
+document.getElementById('u-rol').addEventListener('change', function() {
+    var esCobrador = this.value === 'cobrador';
+    document.getElementById('campo-cobros').style.display = esCobrador ? 'block' : 'none';
+});
+// Disparar al cargar para estado inicial
+document.getElementById('u-rol').dispatchEvent(new Event('change'));
 
 async function guardarPermisos() {
     var btn  = document.getElementById('btn-permisos');
@@ -410,5 +490,65 @@ async function toggleActivo(uid, activo) {
     var res = await apiPost('/api/usuarios.php', { action: accion, id: uid });
     if (res.ok) { toast(res.msg); setTimeout(() => location.reload(), 600); }
     else toast(res.msg || 'Error', 'error');
+}
+
+function verCobros(uid, nombre, cobrosActuales) {
+    document.getElementById('titulo-cobros').textContent = 'COBROS — ' + nombre.toUpperCase();
+    document.getElementById('c-uid').value = uid;
+
+    // Desmarcar todos
+    document.querySelectorAll('#form-cobros input[type=checkbox]').forEach(cb => cb.checked = false);
+
+    // Marcar los asignados actualmente
+    if (cobrosActuales) {
+        cobrosActuales.split(',').forEach(function(cid) {
+            var el = document.getElementById('cob-' + cid.trim());
+            if (el) el.checked = true;
+        });
+    }
+    openModal('modal-cobros');
+}
+
+// Al abrir modal nuevo usuario — resetear form
+document.querySelector('[onclick="openModal(\'modal-usuario\')"]')
+    ?.addEventListener('click', function() {
+    document.getElementById('titulo-usuario').textContent = 'NUEVO USUARIO';
+    document.getElementById('u-id').value      = '';
+    document.getElementById('u-nombre').value  = '';
+    document.getElementById('u-email').value   = '';
+    document.getElementById('u-password').value= '';
+    document.getElementById('u-rol').value     = 'cobrador';
+    document.getElementById('label-password').innerHTML = 'Contraseña <span class="required">*</span>';
+    document.getElementById('hint-password').style.display = 'none';
+    // Desmarcar todos los cobros excepto el activo
+    document.querySelectorAll('#lista-cobros-crear input').forEach(cb => {
+        cb.checked = cb.value == <?= $cobro ?>;
+    });
+    document.getElementById('u-rol').dispatchEvent(new Event('change'));
+});
+
+async function guardarCobros() {
+    var btn    = document.getElementById('btn-cobros');
+    var uid    = document.getElementById('c-uid').value;
+    var checks = document.querySelectorAll('#form-cobros input[type=checkbox]:checked');
+    var cobros = Array.from(checks).map(cb => cb.value);
+
+    if (cobros.length === 0) {
+        if (!confirm('¿Quitar todos los cobros a este cobrador? No podrá iniciar sesión.')) return;
+    }
+
+    btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>';
+    var res = await apiPost('/api/usuarios.php', {
+        action    : 'asignar_cobros',
+        usuario_id: uid,
+        cobros    : cobros
+    });
+    btn.disabled = false; btn.innerHTML = 'GUARDAR';
+
+    if (res.ok) {
+        toast(res.msg);
+        closeModal('modal-cobros');
+        setTimeout(() => location.reload(), 800);
+    } else toast(res.msg || 'Error', 'error');
 }
 </script>

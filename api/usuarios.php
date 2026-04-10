@@ -17,6 +17,30 @@ $cobro  = cobroActivo();
 $action = $data['action'] ?? '';
 
 // ============================================================
+// HELPER — insertar cobro a cobrador
+// ============================================================
+function asignarCobroACobrador(PDO $db, int $uid, int $cid): void {
+    $chkC = $db->prepare("SELECT id FROM cobros WHERE id=? AND activo=1");
+    $chkC->execute([$cid]);
+    if (!$chkC->fetch()) return;
+
+    // Evitar duplicado
+    $chkDup = $db->prepare("SELECT id FROM usuario_cobro WHERE usuario_id=? AND cobro_id=?");
+    $chkDup->execute([$uid, $cid]);
+    if ($chkDup->fetch()) return;
+
+    $db->prepare("INSERT INTO usuario_cobro (
+        usuario_id, cobro_id,
+        puede_ver, puede_registrar_pago,
+        puede_ver_dashboard, puede_ver_deudores, puede_ver_prestamos,
+        puede_ver_pagos, puede_crear_deudor, puede_editar_deudor,
+        puede_crear_prestamo, puede_editar_prestamo, puede_crear_salida,
+        puede_ver_salidas, puede_ver_movimientos
+    ) VALUES (?,?,1,1,1,1,1,1,1,1,1,1,1,1,1)")
+    ->execute([$uid, $cid]);
+}
+
+// ============================================================
 // CREAR USUARIO
 // ============================================================
 if ($action === 'crear') {
@@ -48,34 +72,39 @@ if ($action === 'crear') {
            ->execute([$nombre, $email, password_hash($pass, PASSWORD_DEFAULT), $rol]);
         $uid = (int)$db->lastInsertId();
 
-        if (!empty($data['asignar_cobro']) && $cobro) {
-            // FIX: permisos base según rol al asignar al cobro
-            $esCobrador = in_array($rol, ['cobrador','consulta']);
-            $esAdmin    = in_array($rol, ['admin','superadmin']);
-
-            $db->prepare("INSERT INTO usuario_cobro (
-                usuario_id, cobro_id,
-                puede_ver, puede_registrar_pago,
-                puede_ver_dashboard, puede_ver_deudores, puede_ver_prestamos,
-                puede_ver_pagos, puede_ver_proyeccion, puede_ver_reportes,
-                puede_crear_deudor, puede_editar_deudor,
-                puede_crear_prestamo, puede_editar_prestamo,
-                puede_crear_salida, puede_ver_salidas,
-                puede_ver_movimientos, puede_ver_cuentas,
-                puede_ver_configuracion, puede_exportar
-            ) VALUES (?,?,1,?,1,1,1,1,1,?,?,?,?,?,?,1,1,1,?,?)")
-               ->execute([
-                   $uid, $cobro,
-                   $esCobrador ? 1 : 1,          // puede_registrar_pago
-                   $esAdmin    ? 1 : 0,           // puede_ver_reportes completo
-                   $esCobrador ? 1 : 1,           // puede_crear_deudor
-                   $esCobrador ? 1 : 1,           // puede_editar_deudor
-                   $esCobrador ? 1 : 1,           // puede_crear_prestamo
-                   $esCobrador ? 1 : 1,           // puede_editar_prestamo
-                   $esCobrador ? 1 : 1,           // puede_crear_salida
-                   $esAdmin    ? 1 : 0,           // puede_ver_configuracion
-                   $esAdmin    ? 1 : 0,           // puede_exportar
-               ]);
+        if ($rol === 'cobrador') {
+            // Asignar los cobros seleccionados
+            $cobrosSeleccionados = $data['cobros'] ?? [];
+            if (empty($cobrosSeleccionados)) {
+                // Si no seleccionó ninguno, asignar el cobro activo por defecto
+                if ($cobro) asignarCobroACobrador($db, $uid, $cobro);
+            } else {
+                foreach ($cobrosSeleccionados as $cid) {
+                    asignarCobroACobrador($db, $uid, (int)$cid);
+                }
+            }
+        } else {
+            // Admin/consulta — asignar al cobro activo con permisos granulares
+            if (!empty($data['asignar_cobro']) && $cobro) {
+                $esAdmin = in_array($rol, ['admin','superadmin']);
+                $db->prepare("INSERT INTO usuario_cobro (
+                    usuario_id, cobro_id,
+                    puede_ver, puede_registrar_pago,
+                    puede_ver_dashboard, puede_ver_deudores, puede_ver_prestamos,
+                    puede_ver_pagos, puede_ver_proyeccion, puede_ver_reportes,
+                    puede_crear_deudor, puede_editar_deudor,
+                    puede_crear_prestamo, puede_editar_prestamo,
+                    puede_crear_salida, puede_ver_salidas,
+                    puede_ver_movimientos, puede_ver_cuentas,
+                    puede_ver_configuracion, puede_exportar
+                ) VALUES (?,?,1,1,1,1,1,1,1,?,1,1,1,1,1,1,1,1,?,?)")
+                ->execute([
+                    $uid, $cobro,
+                    $esAdmin ? 1 : 0,  // puede_ver_reportes
+                    $esAdmin ? 1 : 0,  // puede_ver_configuracion
+                    $esAdmin ? 1 : 0,  // puede_exportar
+                ]);
+            }
         }
 
         $db->commit();
@@ -104,7 +133,6 @@ if ($action === 'crear') {
         echo json_encode(['ok'=>false,'msg'=>'Email inválido']); exit;
     }
 
-    // FIX: verificar que el usuario existe
     $chkU = $db->prepare("SELECT id, rol FROM usuarios WHERE id=?");
     $chkU->execute([$id]);
     $usuarioActual = $chkU->fetch();
@@ -112,7 +140,6 @@ if ($action === 'crear') {
         echo json_encode(['ok'=>false,'msg'=>'Usuario no encontrado']); exit;
     }
 
-    // FIX: no permitir cambiar el propio rol
     if ($id === (int)$_SESSION['usuario_id'] && $rol !== $_SESSION['rol']) {
         echo json_encode(['ok'=>false,'msg'=>'No puedes cambiar tu propio rol']); exit;
     }
@@ -146,7 +173,6 @@ if ($action === 'crear') {
         echo json_encode(['ok'=>false,'msg'=>'Datos incompletos']); exit;
     }
 
-    // FIX: verificar que usuario y cobro existen
     $chkU = $db->prepare("SELECT id FROM usuarios WHERE id=? AND activo=1");
     $chkU->execute([$uid]);
     if (!$chkU->fetch()) {
@@ -212,6 +238,38 @@ if ($action === 'crear') {
            ->execute([$uid, $cobro_id, ...$vals]);
     }
     echo json_encode(['ok'=>true,'msg'=>'Permisos actualizados']);
+
+// ============================================================
+// ASIGNAR COBROS A COBRADOR
+// ============================================================
+} elseif ($action === 'asignar_cobros') {
+    $uid    = (int)($data['usuario_id'] ?? 0);
+    $cobros = $data['cobros'] ?? [];
+
+    if (!$uid) { echo json_encode(['ok'=>false,'msg'=>'Usuario inválido']); exit; }
+
+    $chk = $db->prepare("SELECT rol FROM usuarios WHERE id=? AND activo=1");
+    $chk->execute([$uid]);
+    $u = $chk->fetch();
+    if (!$u) { echo json_encode(['ok'=>false,'msg'=>'Usuario no encontrado']); exit; }
+    if ($u['rol'] !== 'cobrador') { echo json_encode(['ok'=>false,'msg'=>'Solo aplica para cobradores']); exit; }
+
+    $db->beginTransaction();
+    try {
+        // Eliminar asignaciones actuales
+        $db->prepare("DELETE FROM usuario_cobro WHERE usuario_id=?")->execute([$uid]);
+
+        // Insertar las nuevas
+        foreach ($cobros as $cid) {
+            asignarCobroACobrador($db, $uid, (int)$cid);
+        }
+
+        $db->commit();
+        echo json_encode(['ok'=>true,'msg'=>'Cobros asignados correctamente']);
+    } catch (Exception $e) {
+        $db->rollBack();
+        echo json_encode(['ok'=>false,'msg'=>'Error: '.$e->getMessage()]);
+    }
 
 // ============================================================
 // ACTIVAR / DESACTIVAR

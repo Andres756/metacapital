@@ -19,12 +19,7 @@ if (!$cobro) {
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
     <title><?= $pageTitle ?? 'Cobrador' ?> — Meta Capital</title>
     <link rel="stylesheet" href="/assets/css/style.css">
-    <a href="/logout.php" 
-    style="display:block;padding:0.75rem 1rem;background:rgba(239,68,68,.15);color:#ef4444;border:1px solid rgba(239,68,68,.3);border-radius:var(--radius);text-align:center;font-family:var(--font-mono);font-size:0.8rem;font-weight:600;text-decoration:none;margin-top:1rem">
-        ✕ CERRAR SESIÓN
-    </a>
     <style>
-        /* Overrides mobile para el portal cobrador */
         body { font-size: 16px; }
 
         .cob-nav {
@@ -57,7 +52,7 @@ if (!$cobro) {
 
         .cob-page {
             min-height: 100vh;
-            padding: 1rem 1rem 5rem; /* espacio para la nav fija */
+            padding: 1rem 1rem 5rem;
         }
         .cob-header {
             display: flex;
@@ -143,3 +138,17 @@ if (!$cobro) {
 </head>
 <body>
 <div class="cob-page">
+
+<!-- Topbar cobrador -->
+<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem;padding-bottom:0.75rem;border-bottom:1px solid var(--border)">
+    <div>
+        <div style="font-family:var(--font-display);font-size:1rem;letter-spacing:2px">META CAPITAL</div>
+        <div style="font-family:var(--font-mono);font-size:0.65rem;color:var(--muted)">
+            <?= htmlspecialchars($_SESSION['usuario_nombre'] ?? '') ?>
+        </div>
+    </div>
+    <a href="/logout.php"
+       style="padding:0.4rem 0.85rem;background:rgba(239,68,68,.12);color:#ef4444;border:1px solid rgba(239,68,68,.25);border-radius:var(--radius);font-family:var(--font-mono);font-size:0.72rem;font-weight:600;text-decoration:none">
+        ✕ SALIR
+    </a>
+</div>

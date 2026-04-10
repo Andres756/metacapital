@@ -8,12 +8,16 @@ if (isLoggedIn()) {
 
 // ── Función de redirección inteligente ───────────────────────
 function redirectPostLogin(): string {
-    // FIX: cobrador va a su portal móvil
     if ($_SESSION['rol'] === 'cobrador') {
+        $cobros = $_SESSION['cobros_asignados'] ?? [];
+        // Si tiene más de 1 cobro → pantalla de selección
+        if (count($cobros) > 1 && cobroActivo() === 0) {
+            return '/cobrador/seleccionar_cobro.php';
+        }
         return '/cobrador/dashboard.php';
     }
 
-    if ($_SESSION['rol'] === 'superadmin' || $_SESSION['rol'] === 'admin') {
+    if (in_array($_SESSION['rol'], ['superadmin','admin'])) {
         return '/pages/dashboard.php';
     }
 
@@ -29,7 +33,6 @@ function redirectPostLogin(): string {
     foreach ($mapa as $permiso => $url) {
         if (canDo($permiso)) return $url;
     }
-    // Sin ningún permiso de vista → configuración de perfil
     return '/pages/configuracion.php';
 }
 
@@ -37,21 +40,36 @@ $error = '';
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $result = login(trim($_POST['email'] ?? ''), $_POST['password'] ?? '');
     if ($result['ok']) {
-        if (cobroActivo() === 0 && count($_SESSION['cobros_asignados']) > 1) {
-            header('Location: /pages/select_cobro.php');
+        $cobros = $_SESSION['cobros_asignados'] ?? [];
+        $rol    = $_SESSION['rol'];
+
+        if ($rol === 'cobrador') {
+            if (count($cobros) === 0) {
+                // Sin cobro asignado — error
+                session_destroy();
+                $error = 'No tienes ningún cobro asignado. Contacta al administrador.';
+            } elseif (count($cobros) === 1) {
+                // Un solo cobro → entrar directo
+                setCobro($cobros[0]);
+                header('Location: /cobrador/dashboard.php'); exit;
+            } else {
+                // Más de un cobro → seleccionar
+                header('Location: /cobrador/seleccionar_cobro.php'); exit;
+            }
         } else {
-            header('Location: ' . redirectPostLogin());
+            // Admin/superadmin
+            if (cobroActivo() === 0 && count($cobros) > 1) {
+                header('Location: /pages/select_cobro.php');
+            } else {
+                header('Location: ' . redirectPostLogin());
+            }
+            exit;
         }
-        exit;
+    } else {
+        $error = $result['msg'];
     }
-    $error = $result['msg'];
 }
 ?>
-<?php if ($_GET['error'] ?? '' === 'inactivo'): ?>
-<div style="color:#ef4444;font-family:var(--font-mono);font-size:0.8rem;text-align:center;margin-bottom:1rem">
-    Tu cuenta fue desactivada. Contacta al administrador.
-</div>
-<?php endif; ?>
 <!DOCTYPE html>
 <html lang="es">
 <head>
@@ -85,6 +103,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     <?php if ($error): ?>
     <div class="alert alert-danger"><?= htmlspecialchars($error) ?></div>
+    <?php endif; ?>
+
+    <?php if (($_GET['error'] ?? '') === 'inactivo'): ?>
+    <div class="alert alert-danger">
+      Tu cuenta fue desactivada. Contacta al administrador.
+    </div>
+    <?php endif; ?>
+
+    <?php if (($_GET['error'] ?? '') === 'sin_cobro'): ?>
+    <div class="alert alert-danger">
+      No tienes un cobro asignado. Contacta al administrador.
+    </div>
     <?php endif; ?>
 
     <form method="POST" action="">
