@@ -386,8 +386,8 @@ function editarUsuario(u) {
     document.getElementById('u-password').value = '';
     document.getElementById('label-password').innerHTML = 'Nueva contraseña';
     document.getElementById('hint-password').style.display = 'block';
-    // Disparar change para mostrar/ocultar cobros según rol
-    document.getElementById('u-rol').dispatchEvent(new Event('change'));
+    // En edición, los cobros se gestionan con el botón "Cobros" — ocultar aquí
+    document.getElementById('campo-cobros').style.display = 'none';
     openModal('modal-usuario');
 }
 
@@ -399,12 +399,13 @@ async function guardarUsuario() {
     if (esNuevo && !data.password) { toast('La contraseña es obligatoria', 'error'); return; }
     if (data.password && data.password.length < 6) { toast('La contraseña debe tener al menos 6 caracteres', 'error'); return; }
 
-    // Si es cobrador, recoger cobros seleccionados
-    if (data.rol === 'cobrador') {
+    // Cobros solo aplican al CREAR — en editar se gestionan con el botón "Cobros"
+    if (!data.id && data.rol === 'cobrador') {
         var checks = document.querySelectorAll('#lista-cobros-crear input:checked');
         data.cobros = Array.from(checks).map(cb => cb.value);
-        delete data['cobros_crear[]'];
     }
+    // Limpiar siempre el campo de formulario cobros_crear[] para no contaminar el payload
+    delete data['cobros_crear[]'];
 
     data.action = data.id ? 'editar' : 'crear';
     btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>';
