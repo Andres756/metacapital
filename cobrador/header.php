@@ -19,6 +19,10 @@ if (!$cobro) {
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
     <title><?= $pageTitle ?? 'Cobrador' ?> — Meta Capital</title>
     <link rel="stylesheet" href="/assets/css/style.css">
+    <a href="/logout.php" 
+    style="display:block;padding:0.75rem 1rem;background:rgba(239,68,68,.15);color:#ef4444;border:1px solid rgba(239,68,68,.3);border-radius:var(--radius);text-align:center;font-family:var(--font-mono);font-size:0.8rem;font-weight:600;text-decoration:none;margin-top:1rem">
+        ✕ CERRAR SESIÓN
+    </a>
     <style>
         /* Overrides mobile para el portal cobrador */
         body { font-size: 16px; }

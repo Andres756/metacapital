@@ -13,6 +13,17 @@ function requireLogin(): void {
         exit;
     }
 
+    // Verificar que el usuario sigue activo en BD
+    $db   = getDB();
+    $stmt = $db->prepare("SELECT activo FROM usuarios WHERE id=?");
+    $stmt->execute([$_SESSION['usuario_id']]);
+    $user = $stmt->fetch();
+
+    if (!$user || !$user['activo']) {
+        session_destroy();
+        header('Location: /login.php?error=inactivo'); exit;
+    }
+
     // ── Revertir acuerdos vencidos a mora ────────────────────
     // Solo una vez por día por sesión para no golpear la BD en cada request
     $hoy = date('Y-m-d');
@@ -20,7 +31,6 @@ function requireLogin(): void {
         $cobro = cobroActivo();
         if ($cobro > 0) {
             try {
-                $db = getDB();
                 $db->prepare("
                     UPDATE prestamos
                     SET estado       = 'en_mora',

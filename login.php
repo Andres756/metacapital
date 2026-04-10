@@ -47,6 +47,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $error = $result['msg'];
 }
 ?>
+<?php if ($_GET['error'] ?? '' === 'inactivo'): ?>
+<div style="color:#ef4444;font-family:var(--font-mono);font-size:0.8rem;text-align:center;margin-bottom:1rem">
+    Tu cuenta fue desactivada. Contacta al administrador.
+</div>
+<?php endif; ?>
 <!DOCTYPE html>
 <html lang="es">
 <head>
