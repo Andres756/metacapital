@@ -87,6 +87,21 @@ if ($action === 'guardar' || !isset($data['action'])) {
         echo json_encode(['ok'=>true,'msg'=>'Deudor actualizado correctamente']);
 
     } else {
+        // Validar documento único — no se permite el mismo documento en ningún cobro
+        $documento = trim($data['documento'] ?? '');
+        if ($documento) {
+            $chkDoc = $db->prepare("SELECT id, nombre FROM deudores WHERE documento = ? LIMIT 1");
+            $chkDoc->execute([$documento]);
+            $existente = $chkDoc->fetch();
+            if ($existente) {
+                echo json_encode([
+                    'ok'  => false,
+                    'msg' => 'Este documento ya está registrado a nombre de: ' . $existente['nombre']
+                ]);
+                exit;
+            }
+        }
+
         // FIX: usar transacción para crear deudor + deudor_cobro
         $db->beginTransaction();
         try {

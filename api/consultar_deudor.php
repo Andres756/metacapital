@@ -40,8 +40,35 @@ if ($deudor['comportamiento'] === 'clavo') {
     ]);
 }
 
+// Verificar si el deudor está en el cobro actual
+$stmtCobro = $db->prepare("
+    SELECT c.nombre
+    FROM deudor_cobro dc
+    JOIN cobros c ON c.id = dc.cobro_id
+    WHERE dc.deudor_id = ? AND dc.cobro_id = ?
+    LIMIT 1
+");
+$stmtCobro->execute([$deudor['id'], $cobro]);
+$enCobroActual = $stmtCobro->fetchColumn();
+
+// Si no está en este cobro, buscar a cuáles pertenece
+$cobrosAjenos = [];
+if (!$enCobroActual) {
+    $stmtAjenos = $db->prepare("
+        SELECT c.nombre
+        FROM deudor_cobro dc
+        JOIN cobros c ON c.id = dc.cobro_id
+        WHERE dc.deudor_id = ?
+        ORDER BY c.nombre
+    ");
+    $stmtAjenos->execute([$deudor['id']]);
+    $cobrosAjenos = array_column($stmtAjenos->fetchAll(), 'nombre');
+}
+
 echo json_encode([
-    'ok'     => true,
-    'existe' => true,
-    'deudor' => $deudor
+    'ok'            => true,
+    'existe'        => true,
+    'en_cobro_actual' => (bool)$enCobroActual,
+    'cobros_ajenos' => $cobrosAjenos,
+    'deudor'        => $deudor
 ]);

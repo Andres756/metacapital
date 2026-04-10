@@ -189,7 +189,32 @@ async function buscarDocumento() {
             return;
         }
 
-        // Existe y no es clavo → cargar datos
+        // Existe y no es clavo — verificar si pertenece a este cobro o a otro
+        if (!data.en_cobro_actual) {
+            const nombresAjenos = data.cobros_ajenos.length > 0
+                ? data.cobros_ajenos.join(', ')
+                : 'otro cobro';
+            resultado.innerHTML = `
+                <div style="padding:1rem;background:rgba(245,158,11,.1);border:2px solid #f59e0b;border-radius:var(--radius)">
+                    <div style="color:#f59e0b;font-weight:700;font-size:1rem;margin-bottom:0.4rem">
+                        ⚠ CLIENTE DE OTRO COBRO
+                    </div>
+                    <div style="font-weight:600;font-size:0.95rem">${d.nombre}</div>
+                    <div style="font-size:0.75rem;color:var(--muted);font-family:var(--font-mono);margin-top:2px">
+                        CC: ${d.documento}
+                    </div>
+                    <div style="font-size:0.85rem;color:var(--text);margin-top:0.6rem">
+                        Este cliente ya está registrado en: <strong>${nombresAjenos}</strong>
+                    </div>
+                    <div style="font-size:0.75rem;color:var(--muted);margin-top:0.4rem;font-family:var(--font-mono)">
+                        Consulta con el administrador si necesitas agregarlo a este cobro.
+                    </div>
+                </div>`;
+            document.getElementById('paso-formulario').style.display = 'none';
+            return;
+        }
+
+        // Existe, no es clavo y pertenece a este cobro → cargar datos para editar
         const badgeColor = d.comportamiento === 'bueno' ? '#22c55e' : '#f59e0b';
         const badgeText  = d.comportamiento === 'bueno' ? 'Buen pagador' : 'Comportamiento regular';
 
