@@ -3,59 +3,67 @@ require_once __DIR__ . '/db.php';
 
 session_start();
 
-function isLoggedIn(): bool {
-    return isset($_SESSION['usuario_id']);
-}
-
 function requireLogin(): void {
-    if (!isLoggedIn()) {
+    if (session_status() === PHP_SESSION_NONE) session_start();
+
+    if (empty($_SESSION['usuario_id'])) {
         header('Location: /login.php');
         exit;
     }
 
-    // Verificar que el usuario sigue activo en BD
-    $db   = getDB();
-    $stmt = $db->prepare("SELECT activo FROM usuarios WHERE id=?");
-    $stmt->execute([$_SESSION['usuario_id']]);
-    $user = $stmt->fetch();
+    $db  = getDB();
+    $uid = (int)$_SESSION['usuario_id'];
+    $rol = $_SESSION['rol'] ?? '';
 
-    if (!$user || !$user['activo']) {
-        session_destroy();
-        header('Location: /login.php?error=inactivo'); exit;
-    }
+    // ── Verificar session_token — detecta si el admin cerró la sesión ──
+    if ($rol === 'cobrador') {
+        $stmtTok = $db->prepare("SELECT session_token FROM usuarios WHERE id=? AND activo=1");
+        $stmtTok->execute([$uid]);
+        $row = $stmtTok->fetch();
 
-    // ── Revertir acuerdos vencidos a mora ────────────────────
-    // Solo una vez por día por sesión para no golpear la BD en cada request
-    $hoy = date('Y-m-d');
-    if (($_SESSION['ultima_revision_acuerdos'] ?? '') !== $hoy) {
-        $cobro = cobroActivo();
-        if ($cobro > 0) {
-            try {
-                $db->prepare("
-                    UPDATE prestamos
-                    SET estado       = 'en_mora',
-                        nota_acuerdo = CONCAT(
-                            COALESCE(nota_acuerdo, ''),
-                            ' [Acuerdo vencido sin pago — ', ?, ']'
-                        ),
-                        updated_at   = NOW()
-                    WHERE cobro_id         = ?
-                      AND estado           = 'en_acuerdo'
-                      AND fecha_compromiso IS NOT NULL
-                      AND fecha_compromiso < ?
-                ")->execute([$hoy, $cobro, $hoy]);
-            } catch (Exception $e) {
-                // Silencioso — no interrumpir navegación si falla
+        // Usuario inactivo o token no coincide → sesión expirada
+        if (!$row || $row['session_token'] !== ($_SESSION['session_token'] ?? '')) {
+            session_destroy();
+            header('Location: /login.php?msg=sesion_cerrada');
+            exit;
+        }
+
+        // ── Verificar liquidación de hoy ─────────────────────────────
+        $cobro = (int)($_SESSION['cobro_activo'] ?? 0);
+        if ($cobro) {
+            $stmtLiq = $db->prepare("
+                SELECT id, cobrador_bloqueado FROM liquidaciones
+                WHERE cobro_id = ? AND estado = 'borrador' AND fecha = CURDATE()
+                LIMIT 1
+            ");
+            $stmtLiq->execute([$cobro]);
+            $liqHoy = $stmtLiq->fetch();
+
+            if (!$liqHoy) {
+                // No hay liquidación abierta hoy
+                session_destroy();
+                header('Location: /login.php?msg=sin_base');
+                exit;
+            }
+
+            if ($liqHoy['cobrador_bloqueado']) {
+                // Admin bloqueó al cobrador para liquidar
+                session_destroy();
+                header('Location: /login.php?msg=bloqueado');
+                exit;
             }
         }
-        $_SESSION['ultima_revision_acuerdos'] = $hoy;
     }
 }
 
-function requireRole(array $roles): void {
+function isLoggedIn(): bool {
+    if (session_status() === PHP_SESSION_NONE) session_start();
+    return !empty($_SESSION['usuario_id']);
+}
+
+function requireRole(string ...$roles): void {
     requireLogin();
     if (!in_array($_SESSION['rol'], $roles)) {
-        http_response_code(403);
         include __DIR__ . '/../pages/403.php';
         exit;
     }
@@ -71,7 +79,6 @@ function cobroActivo(): int {
 }
 
 function setCobro(int $cobro_id): void {
-    // Verificar que el usuario tiene acceso a ese cobro
     if ($_SESSION['rol'] === 'superadmin') {
         $_SESSION['cobro_activo'] = $cobro_id;
         cargarPermisos($cobro_id);
@@ -87,45 +94,26 @@ function cargarPermisos(int $cobro_id): void {
     $db = getDB();
     $stmt = $db->prepare("
         SELECT
-            -- Permisos legacy (se mantienen para compatibilidad)
             puede_ver, puede_crear, puede_editar, puede_eliminar,
             puede_ver_capital, puede_registrar_pago,
-
-            -- Vistas
             puede_ver_dashboard, puede_ver_deudores, puede_ver_prestamos,
             puede_ver_pagos, puede_ver_capital AS puede_ver_capital_seccion,
             puede_ver_cuentas, puede_ver_salidas, puede_ver_movimientos,
             puede_ver_proyeccion, puede_ver_reportes,
             puede_ver_configuracion, puede_ver_usuarios, puede_ver_cobros,
-
-            -- Acciones — Deudores
             puede_crear_deudor, puede_editar_deudor, puede_eliminar_deudor,
-
-            -- Acciones — Préstamos
             puede_crear_prestamo, puede_editar_prestamo, puede_anular_prestamo,
-
-            -- Acciones — Pagos
             puede_anular_pago,
-
-            -- Acciones — Capital
             puede_crear_capitalista, puede_editar_capitalista,
             puede_registrar_movimiento_capital, puede_ver_historial_capitalista,
-
-            -- Acciones — Cuentas
             puede_crear_cuenta, puede_editar_cuenta,
-
-            -- Acciones — Salidas
             puede_crear_salida, puede_eliminar_salida,
-
-            -- Sistema
             puede_exportar
-
         FROM usuario_cobro
         WHERE usuario_id = ? AND cobro_id = ?
     ");
     $stmt->execute([$_SESSION['usuario_id'], $cobro_id]);
     $permisos = $stmt->fetch();
-    // Normalizar: puede_ver_capital viene duplicado por el alias, lo corregimos
     if ($permisos) {
         $permisos['puede_ver_capital'] = $permisos['puede_ver_capital_seccion'] ?? $permisos['puede_ver_capital'];
         unset($permisos['puede_ver_capital_seccion']);
@@ -143,64 +131,112 @@ function login(string $email, string $password): array {
         return ['ok' => false, 'msg' => 'Correo o contraseña incorrectos'];
     }
 
-    // Cargar cobros asignados
-    $stmt2 = $db->prepare("SELECT cobro_id FROM usuario_cobro WHERE usuario_id = ?");
-    $stmt2->execute([$user['id']]);
-    $cobros = array_column($stmt2->fetchAll(), 'cobro_id');
+    // Si es cobrador — verificar que tiene liquidación abierta hoy
+    // (solo bloquear login si ya hubo al menos una liquidación en este cobro)
+    if ($user['rol'] === 'cobrador') {
+        $stmt2 = $db->prepare("SELECT cobro_id FROM usuario_cobro WHERE usuario_id=? LIMIT 1");
+        $stmt2->execute([$user['id']]);
+        $cobro_id = (int)($stmt2->fetchColumn() ?: 0);
 
-    // Actualizar último login
-    $db->prepare("UPDATE usuarios SET ultimo_login = NOW() WHERE id = ?")->execute([$user['id']]);
+        if ($cobro_id) {
+            $stmtLiq = $db->prepare("
+                SELECT id, cobrador_bloqueado FROM liquidaciones
+                WHERE cobro_id=? AND estado='borrador' AND fecha=CURDATE()
+                LIMIT 1
+            ");
+            $stmtLiq->execute([$cobro_id]);
+            $liqHoy = $stmtLiq->fetch();
+
+            if ($liqHoy) {
+                // Hay liquidación hoy — verificar si está bloqueado
+                if ($liqHoy['cobrador_bloqueado']) {
+                    return [
+                        'ok'  => false,
+                        'msg' => '🔒 El administrador ha bloqueado el acceso para procesar la liquidación. Espera a que termine.'
+                    ];
+                }
+                // No bloqueado → puede entrar
+            } else {
+                // No hay liquidación abierta hoy
+                $stmtHistorial = $db->prepare("SELECT COUNT(*) FROM liquidaciones WHERE cobro_id=?");
+                $stmtHistorial->execute([$cobro_id]);
+                $totalLiqs = (int)$stmtHistorial->fetchColumn();
+
+                if ($totalLiqs > 0) {
+                    return [
+                        'ok'  => false,
+                        'msg' => '⏳ No puedes ingresar — el administrador aún no ha abierto la liquidación del día.'
+                    ];
+                }
+            }
+        }
+    }
+
+    // Generar session_token único para cobradores
+    $session_token = null;
+    if ($user['rol'] === 'cobrador') {
+        $session_token = bin2hex(random_bytes(32));
+        $db->prepare("UPDATE usuarios SET session_token=?, ultimo_login=NOW() WHERE id=?")
+           ->execute([$session_token, $user['id']]);
+    } else {
+        $db->prepare("UPDATE usuarios SET ultimo_login=NOW() WHERE id=?")->execute([$user['id']]);
+    }
+
+    // Cargar cobros asignados
+    $stmt3 = $db->prepare("SELECT cobro_id FROM usuario_cobro WHERE usuario_id=?");
+    $stmt3->execute([$user['id']]);
+    $cobros = array_column($stmt3->fetchAll(), 'cobro_id');
 
     // Guardar sesión
     $_SESSION['usuario_id']      = $user['id'];
     $_SESSION['usuario_nombre']  = $user['nombre'];
     $_SESSION['rol']             = $user['rol'];
     $_SESSION['cobros_asignados']= $cobros;
+    $_SESSION['session_token']   = $session_token;
 
     // Seleccionar cobro activo
     if ($user['rol'] === 'superadmin') {
-        // Carga el primer cobro disponible
-        $stmt3 = $db->prepare("SELECT id FROM cobros WHERE activo = 1 ORDER BY id LIMIT 1");
-        $stmt3->execute();
-        $primerCobro = $stmt3->fetchColumn();
+        $stmt4 = $db->prepare("SELECT id FROM cobros WHERE activo=1 ORDER BY id LIMIT 1");
+        $stmt4->execute();
+        $primerCobro = $stmt4->fetchColumn();
         $_SESSION['cobro_activo'] = $primerCobro ?: 0;
         $_SESSION['permisos'] = [
-            // Legacy
             'puede_ver' => 1, 'puede_crear' => 1, 'puede_editar' => 1,
             'puede_eliminar' => 1, 'puede_ver_capital' => 1, 'puede_registrar_pago' => 1,
-            // Vistas
             'puede_ver_dashboard' => 1, 'puede_ver_deudores' => 1, 'puede_ver_prestamos' => 1,
-            'puede_ver_pagos' => 1, 'puede_ver_capital' => 1, 'puede_ver_cuentas' => 1,
+            'puede_ver_pagos' => 1, 'puede_ver_cuentas' => 1,
             'puede_ver_salidas' => 1, 'puede_ver_movimientos' => 1, 'puede_ver_proyeccion' => 1,
             'puede_ver_reportes' => 1, 'puede_ver_configuracion' => 1,
             'puede_ver_usuarios' => 1, 'puede_ver_cobros' => 1,
-            // Acciones — Deudores
             'puede_crear_deudor' => 1, 'puede_editar_deudor' => 1, 'puede_eliminar_deudor' => 1,
-            // Acciones — Préstamos
             'puede_crear_prestamo' => 1, 'puede_editar_prestamo' => 1, 'puede_anular_prestamo' => 1,
-            // Acciones — Pagos
             'puede_anular_pago' => 1,
-            // Acciones — Capital
             'puede_crear_capitalista' => 1, 'puede_editar_capitalista' => 1,
             'puede_registrar_movimiento_capital' => 1, 'puede_ver_historial_capitalista' => 1,
-            // Acciones — Cuentas
             'puede_crear_cuenta' => 1, 'puede_editar_cuenta' => 1,
-            // Acciones — Salidas
             'puede_crear_salida' => 1, 'puede_eliminar_salida' => 1,
-            // Sistema
             'puede_exportar' => 1,
         ];
     } elseif (count($cobros) === 1) {
         $_SESSION['cobro_activo'] = $cobros[0];
         cargarPermisos($cobros[0]);
     } else {
-        $_SESSION['cobro_activo'] = 0; // Debe seleccionar cobro
+        $_SESSION['cobro_activo'] = 0;
     }
 
     return ['ok' => true, 'cobros' => count($cobros)];
 }
 
 function logout(): void {
+    if (session_status() === PHP_SESSION_NONE) session_start();
+
+    // Si es cobrador, limpiar el session_token de la BD
+    if (!empty($_SESSION['usuario_id']) && ($_SESSION['rol'] ?? '') === 'cobrador') {
+        $db = getDB();
+        $db->prepare("UPDATE usuarios SET session_token=NULL WHERE id=?")
+           ->execute([$_SESSION['usuario_id']]);
+    }
+
     session_destroy();
     header('Location: /login.php');
     exit;

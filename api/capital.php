@@ -28,12 +28,12 @@ if ($method === 'GET') {
         $cap = $stmtC->fetch();
         if (!$cap) { echo json_encode(['ok'=>false,'msg'=>'Capitalista no encontrado']); exit; }
 
-        // Sin JOIN a cuentas — ya no se usa
         $stmtM = $db->prepare("
             SELECT m.*, m.metodo_pago
             FROM capital_movimientos m
             WHERE m.capitalista_id=? AND m.cobro_id=?
               AND (m.anulado=0 OR m.anulado IS NULL)
+              AND m.origen = 'capital'
             ORDER BY m.fecha DESC, m.id DESC
             LIMIT 60
         ");
@@ -76,8 +76,8 @@ if ($action === 'crear_capitalista') {
     $tasa_redito   = (float)($data['tasa_redito'] ?? 0);
     $frecuencia    = in_array($data['frecuencia_redito']??'',['mensual','quincenal','libre']) ? $data['frecuencia_redito'] : 'mensual';
     $metodo_pago   = in_array($data['metodo_pago']??'',['efectivo','banco']) ? $data['metodo_pago'] : 'efectivo';
-
     $fecha_inicio  = $data['fecha_inicio'] ?? date('Y-m-d');
+
     if (!$fecha_inicio || !strtotime($fecha_inicio)) {
         echo json_encode(['ok'=>false,'msg'=>'Fecha de inicio inválida']); exit;
     }
@@ -97,10 +97,11 @@ if ($action === 'crear_capitalista') {
         ]);
         $cap_id = (int)$db->lastInsertId();
 
+        // Saldo inicial — origen='capital' → sí entra a la base
         if ($monto_inicial > 0) {
             $db->prepare("INSERT INTO capital_movimientos
-                (cobro_id, tipo, es_entrada, monto, metodo_pago, capitalista_id, descripcion, fecha, usuario_id)
-                VALUES (?, 'ingreso_capital', 1, ?, ?, ?, ?, ?, ?)")
+                (cobro_id, tipo, origen, es_entrada, monto, metodo_pago, capitalista_id, descripcion, fecha, usuario_id)
+                VALUES (?, 'ingreso_capital', 'capital', 1, ?, ?, ?, ?, ?, ?)")
             ->execute([
                 $cobro, $monto_inicial, $metodo_pago, $cap_id,
                 'Saldo inicial — ' . $nombre, $fecha_inicio, $_SESSION['usuario_id']
@@ -116,7 +117,7 @@ if ($action === 'crear_capitalista') {
     }
 
 // ============================================================
-// MOVIMIENTO MANUAL
+// MOVIMIENTO MANUAL (abono, retiro, redito, devolucion)
 // ============================================================
 } elseif ($action === 'movimiento') {
     if (!canDo('puede_registrar_movimiento_capital')) {
@@ -127,8 +128,8 @@ if ($action === 'crear_capitalista') {
     $tipo           = $data['tipo'] ?? '';
     $monto          = (float)($data['monto'] ?? 0);
     $metodo_pago    = in_array($data['metodo_pago']??'',['efectivo','banco']) ? $data['metodo_pago'] : 'efectivo';
+    $fecha          = $data['fecha'] ?? date('Y-m-d');
 
-    $fecha = $data['fecha'] ?? date('Y-m-d');
     if (!$fecha || !strtotime($fecha)) {
         echo json_encode(['ok'=>false,'msg'=>'Fecha inválida']); exit;
     }
@@ -144,6 +145,7 @@ if ($action === 'crear_capitalista') {
     if (!isset($tipoMap[$tipo])) {
         echo json_encode(['ok'=>false,'msg'=>'Tipo de movimiento inválido']); exit;
     }
+
     $tipo_mov   = $tipoMap[$tipo];
     $es_entrada = in_array($tipo_mov, ['ingreso_capital']) ? 1 : 0;
 
@@ -155,13 +157,13 @@ if ($action === 'crear_capitalista') {
     $capRow = $check->fetch();
     if (!$capRow) { echo json_encode(['ok'=>false,'msg'=>'Capitalista no encontrado']); exit; }
 
+    // Las salidas validan saldo de caja y saldo del capitalista
     if (!$es_entrada) {
-        // Validar saldo de caja para salidas
         $saldo = getSaldoCaja($db, $cobro);
         if ($saldo < $monto) {
             echo json_encode([
                 'ok'  => false,
-                'msg' => 'Saldo insuficiente en caja. Disponible: '.fmt($saldo).' · Requerido: '.fmt($monto)
+                'msg' => 'Saldo insuficiente en caja. Disponible: ' . fmt($saldo) . ' · Requerido: ' . fmt($monto)
             ]); exit;
         }
         validarSaldoCapitalista($db, $capitalista_id, $monto, $capRow['nombre']);
@@ -169,9 +171,10 @@ if ($action === 'crear_capitalista') {
 
     $db->beginTransaction();
     try {
+        // origen='capital' → todos los movimientos de capitalistas afectan la base
         $db->prepare("INSERT INTO capital_movimientos
-            (cobro_id, tipo, es_entrada, monto, metodo_pago, capitalista_id, descripcion, fecha, usuario_id)
-            VALUES (?,?,?,?,?,?,?,?,?)")
+            (cobro_id, tipo, origen, es_entrada, monto, metodo_pago, capitalista_id, descripcion, fecha, usuario_id)
+            VALUES (?,?,'capital',?,?,?,?,?,?,?)")
         ->execute([
             $cobro, $tipo_mov, $es_entrada, $monto, $metodo_pago, $capitalista_id,
             trim($data['descripcion'] ?? '') ?: null, $fecha, $_SESSION['usuario_id']

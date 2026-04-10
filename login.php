@@ -6,22 +6,13 @@ if (isLoggedIn()) {
     exit;
 }
 
-// ── Función de redirección inteligente ───────────────────────
 function redirectPostLogin(): string {
     if ($_SESSION['rol'] === 'cobrador') {
-        $cobros = $_SESSION['cobros_asignados'] ?? [];
-        // Si tiene más de 1 cobro → pantalla de selección
-        if (count($cobros) > 1 && cobroActivo() === 0) {
-            return '/cobrador/seleccionar_cobro.php';
-        }
         return '/cobrador/dashboard.php';
     }
-
-    if (in_array($_SESSION['rol'], ['superadmin','admin'])) {
+    if ($_SESSION['rol'] === 'superadmin' || $_SESSION['rol'] === 'admin') {
         return '/pages/dashboard.php';
     }
-
-    // Redirigir al primer destino con permiso
     $mapa = [
         'puede_ver_dashboard'  => '/pages/dashboard.php',
         'puede_registrar_pago' => '/pages/pagos.php',
@@ -36,38 +27,34 @@ function redirectPostLogin(): string {
     return '/pages/configuracion.php';
 }
 
+// Mensajes especiales por parámetro GET
+$msgParam = $_GET['msg'] ?? '';
+$alertaMsg   = '';
+$alertaTipo  = 'warning';
+
+if ($msgParam === 'sesion_cerrada') {
+    $alertaMsg  = '🔒 Tu sesión fue cerrada por el administrador para procesar la liquidación del día.';
+    $alertaTipo = 'warning';
+} elseif ($msgParam === 'bloqueado') {
+    $alertaMsg  = '🔒 El administrador ha bloqueado el acceso para procesar la liquidación. Espera a que termine.';
+    $alertaTipo = 'warning';
+} elseif ($msgParam === 'sin_base') {
+    $alertaMsg  = '⏳ Aún no puedes ingresar — el administrador no ha abierto la liquidación del día. Espera a que te entreguen la base.';
+    $alertaTipo = 'info';
+}
+
 $error = '';
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $result = login(trim($_POST['email'] ?? ''), $_POST['password'] ?? '');
     if ($result['ok']) {
-        $cobros = $_SESSION['cobros_asignados'] ?? [];
-        $rol    = $_SESSION['rol'];
-
-        if ($rol === 'cobrador') {
-            if (count($cobros) === 0) {
-                // Sin cobro asignado — error
-                session_destroy();
-                $error = 'No tienes ningún cobro asignado. Contacta al administrador.';
-            } elseif (count($cobros) === 1) {
-                // Un solo cobro → entrar directo
-                setCobro($cobros[0]);
-                header('Location: /cobrador/dashboard.php'); exit;
-            } else {
-                // Más de un cobro → seleccionar
-                header('Location: /cobrador/seleccionar_cobro.php'); exit;
-            }
+        if (cobroActivo() === 0 && count($_SESSION['cobros_asignados']) > 1) {
+            header('Location: /pages/select_cobro.php');
         } else {
-            // Admin/superadmin
-            if (cobroActivo() === 0 && count($cobros) > 1) {
-                header('Location: /pages/select_cobro.php');
-            } else {
-                header('Location: ' . redirectPostLogin());
-            }
-            exit;
+            header('Location: ' . redirectPostLogin());
         }
-    } else {
-        $error = $result['msg'];
+        exit;
     }
+    $error = $result['msg'];
 }
 ?>
 <!DOCTYPE html>
@@ -101,20 +88,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       <span class="logo-sub">Sistema de Capital</span>
     </div>
 
+    <?php if ($alertaMsg): ?>
+    <div class="alert alert-<?= $alertaTipo ?>" style="margin-bottom:1rem;font-size:0.85rem;line-height:1.5">
+      <?= $alertaMsg ?>
+    </div>
+    <?php endif; ?>
+
     <?php if ($error): ?>
     <div class="alert alert-danger"><?= htmlspecialchars($error) ?></div>
-    <?php endif; ?>
-
-    <?php if (($_GET['error'] ?? '') === 'inactivo'): ?>
-    <div class="alert alert-danger">
-      Tu cuenta fue desactivada. Contacta al administrador.
-    </div>
-    <?php endif; ?>
-
-    <?php if (($_GET['error'] ?? '') === 'sin_cobro'): ?>
-    <div class="alert alert-danger">
-      No tienes un cobro asignado. Contacta al administrador.
-    </div>
     <?php endif; ?>
 
     <form method="POST" action="">

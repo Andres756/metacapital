@@ -17,9 +17,9 @@ if (!$liquidacion) { header('Location: /pages/liquidacion.php'); exit; }
 
 $fecha = $liquidacion['fecha'];
 
-// Buscar cobrador
+// Buscar cobrador — incluir session_token para saber si está en sesión
 $stmtCob = $db->prepare("
-    SELECT u.id, u.nombre, u.activo FROM usuarios u
+    SELECT u.id, u.nombre, u.activo, u.session_token FROM usuarios u
     JOIN usuario_cobro uc ON uc.usuario_id = u.id
     WHERE uc.cobro_id = ? AND u.rol = 'cobrador' LIMIT 1
 ");
@@ -79,7 +79,7 @@ $totalGastos = array_sum(array_column(
 
 $base_trabajado    = (float)$liquidacion['base_trabajado'];
 $base              = (float)$liquidacion['base'];
-$efectivo_esperado = ($totalPagos + $base_trabajado) - $totalPrestamos - $totalGastos;
+$efectivo_esperado = ($base_trabajado + $totalPagos) - $totalPrestamos - $totalGastos;
 $nueva_base        = ($base - $base_trabajado) + (float)($liquidacion['dinero_entregado'] ?? 0);
 
 $pageTitle   = 'Liquidación ' . date('d M Y', strtotime($fecha));
@@ -125,11 +125,14 @@ const BASE_TRABAJADO    = {$baseTrabajadoJs};
 const LIQUIDACION_ID    = {$liquidacionId};
 const COBRADOR_ID       = {$cobradorId};
 
+function fmt(n) {
+    return (n < 0 ? '-' : '') + '\$' + Math.abs(Math.round(n)).toLocaleString('es-CO');
+}
+
 function calcularDiferencia() {
     const entregado  = parseFloat(document.getElementById('input-dinero-entregado').value) || 0;
     const diferencia = EFECTIVO_ESPERADO - entregado;
     const nuevaBase  = (BASE - BASE_TRABAJADO) + entregado;
-    const fmt        = n => (n >= 0 ? '' : '-') + '\$' + Math.abs(Math.round(n)).toLocaleString('es-CO');
     const elDif  = document.getElementById('display-diferencia');
     const elBase = document.getElementById('display-nueva-base');
     elDif.textContent  = fmt(diferencia);
@@ -137,13 +140,55 @@ function calcularDiferencia() {
     elBase.textContent = 'Nueva base: ' + fmt(nuevaBase);
 }
 
-async function toggleCobrador(id, activo) {
-    if (!confirm((activo ? 'Activar' : 'Inactivar') + ' al cobrador?')) return;
-    const res = await apiPost('/api/usuarios.php', { action: activo ? 'activar' : 'desactivar', id });
-    if (res.ok) { toast(res.msg); setTimeout(() => location.reload(), 600); }
-    else toast(res.msg || 'Error', 'error');
+// ── Bloquear / Desbloquear cobrador — toggle automático ─────
+async function toggleBloqueo(liquidacionId) {
+    const btn = event.target;
+    const bloqueando = btn.textContent.includes('Bloquear') && !btn.textContent.includes('Des');
+    const msg = bloqueando
+        ? '¿Bloquear al cobrador? Su sesión será cerrada inmediatamente.'
+        : '¿Desbloquear al cobrador? Podrá volver a iniciar sesión.';
+
+    if (!confirm(msg)) return;
+
+    btn.disabled = true;
+    btn.textContent = '⏳...';
+
+    const res = await apiPost('/api/liquidacion.php', {
+        action         : 'bloquear_cobrador',
+        liquidacion_id : liquidacionId
+    });
+
+    if (res.ok) {
+        toast(res.msg);
+        setTimeout(() => location.reload(), 600);
+    } else {
+        toast(res.msg || 'Error', 'error');
+        btn.disabled = false;
+    }
 }
 
+// ── Segunda entrega de base ──────────────────────────────────
+async function entregarBaseAdicional() {
+    const monto = parseFloat(document.getElementById('input-base-adicional').value) || 0;
+    if (monto <= 0) { toast('Ingresa el monto a entregar', 'error'); return; }
+
+    if (!confirm('¿Entregar ' + fmt(monto) + ' adicionales al cobrador?')) return;
+
+    const res = await apiPost('/api/liquidacion.php', {
+        action        : 'entregar_base_adicional',
+        liquidacion_id: LIQUIDACION_ID,
+        monto
+    });
+
+    if (res.ok) {
+        toast(res.msg);
+        setTimeout(() => location.reload(), 800);
+    } else {
+        toast(res.msg || 'Error', 'error');
+    }
+}
+
+// ── Gastos ───────────────────────────────────────────────────
 async function aprobarGasto(id) {
     const res = await apiPost('/api/gastos.php', { action: 'aprobar', id });
     if (res.ok) { toast('Gasto aprobado'); setTimeout(() => location.reload(), 600); }
@@ -156,6 +201,7 @@ async function rechazarGasto(id) {
     else toast(res.msg || 'Error', 'error');
 }
 
+// ── Papelería ────────────────────────────────────────────────
 function actualizarPapeleria(prestamoId, montoPrestado) {
     const pct   = parseFloat(document.getElementById('pap-pct-' + prestamoId).value) || 0;
     const monto = Math.round(montoPrestado * (pct / 100));
@@ -185,12 +231,13 @@ function recalcularTotalPapeleria() {
     if (el) el.textContent = '\$' + total.toLocaleString('es-CO');
 }
 
+// ── Cierre ───────────────────────────────────────────────────
 async function cerrarLiquidacion() {
     const entregado          = parseFloat(document.getElementById('input-dinero-entregado').value) || 0;
     const papeleriaEntregada = parseFloat(document.getElementById('input-papeleria-entregada').value) || 0;
     const notas              = document.getElementById('input-notas').value.trim();
 
-    if (entregado <= 0) { alert('Ingresa el dinero entregado por el cobrador'); return; }
+    if (entregado < 0) { toast('El dinero entregado no puede ser negativo', 'error'); return; }
 
     const papeleriaPorPrestamo = {};
     document.querySelectorAll('[id^="pap-pct-"]').forEach(input => {
@@ -201,15 +248,15 @@ async function cerrarLiquidacion() {
 
     const diferencia = EFECTIVO_ESPERADO - entregado;
     const nuevaBase  = (BASE - BASE_TRABAJADO) + entregado;
-    const fmt        = n => '\$' + Math.abs(Math.round(n)).toLocaleString('es-CO');
 
     if (!confirm(
         'CONFIRMAR CIERRE\\n\\n' +
         'Efectivo esperado: ' + fmt(EFECTIVO_ESPERADO) + '\\n' +
         'Dinero entregado:  ' + fmt(entregado) + '\\n' +
-        'Diferencia:        ' + (diferencia >= 0 ? '+' : '-') + fmt(diferencia) + '\\n' +
+        'Diferencia:        ' + fmt(diferencia) + '\\n' +
         'Nueva base:        ' + fmt(nuevaBase) + '\\n' +
         'Papelería:         ' + fmt(papeleriaEntregada) + '\\n\\n' +
+        '⚠ El cobrador quedará bloqueado hasta que abras el día siguiente.\\n' +
         '¿Cerrar? No se puede deshacer.'
     )) return;
 

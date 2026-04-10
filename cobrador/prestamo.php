@@ -138,20 +138,7 @@ $deudores = $stmtD->fetchAll();
         </label>
     </div>
 
-    <div class="field-lg">
-        <label>Fecha inicio</label>
-        <input type="date" id="p_fecha" value="<?= date('Y-m-d') ?>">
-    </div>
-
-    <div class="field-lg">
-        <label>Método de pago</label>
-        <select id="p_metodo">
-            <option value="efectivo">Efectivo</option>
-            <option value="banco">Banco</option>
-        </select>
-    </div>
-
-    <!-- % Papelería — solo visual, no editable -->
+    <!-- % Papelería — solo visual -->
     <div class="field-lg">
         <label style="color:var(--muted)">Papelería</label>
         <div style="display:flex;align-items:center;gap:0.75rem;padding:0.75rem;background:var(--bg);border-radius:var(--radius);border:1px solid var(--border)">
@@ -214,6 +201,7 @@ $deudorIdJs = $deudorPre ? (int)$deudorPre['id'] : 0;
 ?>
 <script>
 const DEUDOR_ID = <?= $deudorIdJs ?>;
+const HOY       = '<?= date('Y-m-d') ?>';
 
 function filtrarDeudores(q) {
     const items = document.querySelectorAll('.deudor-item');
@@ -226,8 +214,6 @@ function filtrarDeudores(q) {
 function onFrecuenciaChange() {
     const freq = document.getElementById('p_frecuencia').value;
     document.getElementById('wrap-domingos').style.display = freq === 'diario' ? 'block' : 'none';
-    document.getElementById('label-interes').textContent =
-        document.getElementById('p_tipo_int').value === 'porcentaje' ? 'Interés (%)' : 'Interés ($ fijo)';
     calcularPreview();
 }
 
@@ -237,9 +223,6 @@ function calcularPreview() {
     const intVal  = parseFloat(document.getElementById('p_interes').value) || 0;
     const cuotas  = parseInt(document.getElementById('p_cuotas').value)    || 1;
     const freq    = document.getElementById('p_frecuencia').value;
-    const fecha   = document.getElementById('p_fecha').value;
-
-    // FIX: % papelería viene del cobro — no de un input del cobrador
     const papPct  = <?= $cobroData['papeleria_pct'] ?? 10 ?>;
 
     document.getElementById('label-interes').textContent =
@@ -255,10 +238,10 @@ function calcularPreview() {
     const total    = monto + intCalc;
     const valCuota = cuotas > 0 ? Math.round(total / cuotas) : total;
     const papMonto = Math.round(monto * (papPct / 100));
-    const montoReal= monto - papMonto; // lo que realmente recibe el cliente
+    const montoReal= monto - papMonto;
 
     const diasMap  = { diario:1, semanal:7, quincenal:15, mensual:30 };
-    const fechaFin = new Date(fecha || new Date());
+    const fechaFin = new Date(HOY);
     fechaFin.setDate(fechaFin.getDate() + (diasMap[freq] || 30) * cuotas);
 
     const fmt = n => '$' + Math.round(n).toLocaleString('es-CO');
@@ -270,7 +253,6 @@ function calcularPreview() {
         fechaFin.toLocaleDateString('es-CO', {day:'2-digit',month:'short',year:'numeric'});
     document.getElementById('preview-prestamo').style.display = 'block';
 
-    // Solo visual — el cobrador no puede editar el %
     document.getElementById('papeleria-preview').textContent =
         papMonto > 0 ? `Papelería: ${fmt(papMonto)} · Cliente recibe: ${fmt(montoReal)}` : '';
 }
@@ -278,10 +260,8 @@ function calcularPreview() {
 async function guardarPrestamo() {
     const monto   = parseFloat(document.getElementById('p_monto').value) || 0;
     const cuotas  = parseInt(document.getElementById('p_cuotas').value) || 1;
-    const fecha   = document.getElementById('p_fecha').value;
 
     if (!monto || monto <= 0) { alert('Ingresa el monto a prestar'); return; }
-    if (!fecha)               { alert('Ingresa la fecha de inicio'); return; }
 
     const freq     = document.getElementById('p_frecuencia').value;
     const domingos = freq === 'diario' && document.getElementById('p_domingos').checked;
@@ -311,19 +291,19 @@ async function guardarPrestamo() {
             method : 'POST',
             headers: { 'Content-Type': 'application/json' },
             body   : JSON.stringify({
-                action              : 'crear',
-                deudor_id           : DEUDOR_ID,
-                monto_prestado      : monto,
-                tipo_interes        : tipoInt,
-                interes_valor       : intVal,
-                frecuencia_pago     : freq,
-                num_cuotas          : cuotas,
-                fecha_inicio        : fecha,
-                metodo_pago: document.getElementById('p_metodo').value,
-                omitir_domingos     : domingos ? 1 : 0,
-                papeleria_pct: <?= $cobroData['papeleria_pct'] ?? 10 ?>,
-                observaciones       : document.getElementById('p_obs').value.trim(),
-                tipo_origen         : 'nuevo'
+                action          : 'crear',
+                deudor_id       : DEUDOR_ID,
+                monto_prestado  : monto,
+                tipo_interes    : tipoInt,
+                interes_valor   : intVal,
+                frecuencia_pago : freq,
+                num_cuotas      : cuotas,
+                fecha_inicio    : HOY,
+                metodo_pago     : 'efectivo',
+                omitir_domingos : domingos ? 1 : 0,
+                papeleria_pct   : <?= $cobroData['papeleria_pct'] ?? 10 ?>,
+                observaciones   : document.getElementById('p_obs').value.trim(),
+                tipo_origen     : 'nuevo'
             })
         });
 
@@ -334,9 +314,8 @@ async function guardarPrestamo() {
         } catch(e) {
             console.error('Respuesta no es JSON:', texto);
             alert('Error del servidor: ' + texto.substring(0, 300));
-            btn.textContent      = 'REGISTRAR PRÉSTAMO';
-            btn.style.background = '';
-            btn.disabled         = false;
+            btn.textContent = 'REGISTRAR PRÉSTAMO';
+            btn.disabled    = false;
             return;
         }
 
@@ -348,15 +327,13 @@ async function guardarPrestamo() {
             }, 1200);
         } else {
             alert(data.msg || 'Error al registrar');
-            btn.textContent      = 'REGISTRAR PRÉSTAMO';
-            btn.style.background = '';
-            btn.disabled         = false;
+            btn.textContent = 'REGISTRAR PRÉSTAMO';
+            btn.disabled    = false;
         }
     } catch(e) {
         alert('Error de conexión: ' + e.message);
-        btn.textContent      = 'REGISTRAR PRÉSTAMO';
-        btn.style.background = '';
-        btn.disabled         = false;
+        btn.textContent = 'REGISTRAR PRÉSTAMO';
+        btn.disabled    = false;
     }
 }
 </script>

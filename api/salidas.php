@@ -41,12 +41,12 @@ if ($action === 'crear') {
         echo json_encode(['ok'=>false,'msg'=>'Fecha inválida']); exit;
     }
 
-    // Validar saldo de caja
+    // Validar saldo de caja — solo suma origen capital/liquidacion
     $saldo = getSaldoCaja($db, $cobro);
     if ($saldo < $monto) {
         echo json_encode([
             'ok'  => false,
-            'msg' => 'Saldo insuficiente en caja. Disponible: '.fmt($saldo).' · Requerido: '.fmt($monto)
+            'msg' => 'Saldo insuficiente en caja. Disponible: ' . fmt($saldo) . ' · Requerido: ' . fmt($monto)
         ]); exit;
     }
 
@@ -69,9 +69,10 @@ if ($action === 'crear') {
 
     $db->beginTransaction();
     try {
+        // origen='capital' — estas salidas SÍ afectan la base general
         $db->prepare("INSERT INTO capital_movimientos
-            (cobro_id, tipo, es_entrada, monto, metodo_pago, capitalista_id, descripcion, fecha, usuario_id)
-            VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?)")
+            (cobro_id, tipo, origen, es_entrada, monto, metodo_pago, capitalista_id, descripcion, fecha, usuario_id)
+            VALUES (?, ?, 'capital', 0, ?, ?, ?, ?, ?, ?)")
         ->execute([
             $cobro, $tipo_mov, $monto, $metodo_pago,
             $capitalista_id, $descripcion, $fecha, $_SESSION['usuario_id']
@@ -91,7 +92,7 @@ if ($action === 'crear') {
             'gasto_operativo'    => 'Gasto registrado',
             'retiro_socio'       => 'Retiro registrado',
         ];
-        echo json_encode(['ok'=>true,'msg'=>$msgs[$tipo]]);
+        echo json_encode(['ok'=>true,'msg'=>$msgs[$tipo] ?? 'Salida registrada']);
 
     } catch (Exception $e) {
         $db->rollBack();
@@ -116,6 +117,14 @@ if ($action === 'crear') {
         echo json_encode(['ok'=>false,'msg'=>'Este movimiento ya estaba anulado']); exit;
     }
 
+    // No anular movimientos de liquidacion desde aquí
+    if ($mov['origen'] === 'liquidacion') {
+        echo json_encode([
+            'ok'  => false,
+            'msg' => 'Los movimientos de liquidación no se pueden anular desde aquí. Contacta al administrador.'
+        ]); exit;
+    }
+
     if (in_array($mov['tipo'], ['prestamo','salida']) && $mov['prestamo_id']) {
         echo json_encode([
             'ok'  => false,
@@ -126,7 +135,7 @@ if ($action === 'crear') {
     $db->prepare("UPDATE capital_movimientos SET anulado=1, anulado_at=NOW(), anulado_por=? WHERE id=?")
        ->execute([$_SESSION['usuario_id'], $id]);
 
-    echo json_encode(['ok'=>true,'msg'=>'Movimiento anulado. El saldo fue corregido.']);
+    echo json_encode(['ok'=>true,'msg'=>'Salida anulada. El saldo fue corregido.']);
 
 } else {
     echo json_encode(['ok'=>false,'msg'=>'Acción no reconocida']);

@@ -24,7 +24,6 @@ function asignarCobroACobrador(PDO $db, int $uid, int $cid): void {
     $chkC->execute([$cid]);
     if (!$chkC->fetch()) return;
 
-    // Evitar duplicado
     $chkDup = $db->prepare("SELECT id FROM usuario_cobro WHERE usuario_id=? AND cobro_id=?");
     $chkDup->execute([$uid, $cid]);
     if ($chkDup->fetch()) return;
@@ -38,6 +37,26 @@ function asignarCobroACobrador(PDO $db, int $uid, int $cid): void {
         puede_ver_salidas, puede_ver_movimientos
     ) VALUES (?,?,1,1,1,1,1,1,1,1,1,1,1,1,1)")
     ->execute([$uid, $cid]);
+}
+
+// ============================================================
+// HELPER — verificar si cobrador tiene liquidación abierta
+// Retorna array con datos de la liquidación o null
+// ============================================================
+function liquidacionAbierta(PDO $db, int $uid): ?array {
+    $stmt = $db->prepare("
+        SELECT l.id, l.fecha, l.base_trabajado, c.nombre AS cobro_nombre
+        FROM liquidaciones l
+        JOIN cobros c ON c.id = l.cobro_id
+        JOIN usuario_cobro uc ON uc.cobro_id = l.cobro_id
+        WHERE uc.usuario_id = ?
+          AND l.estado = 'borrador'
+          AND l.base_trabajado > 0
+        LIMIT 1
+    ");
+    $stmt->execute([$uid]);
+    $row = $stmt->fetch();
+    return $row ?: null;
 }
 
 // ============================================================
@@ -66,6 +85,32 @@ if ($action === 'crear') {
         echo json_encode(['ok'=>false,'msg'=>'Ya existe un usuario con ese email']); exit;
     }
 
+    // Si es cobrador, verificar que los cobros seleccionados no tengan otro cobrador activo
+    if ($rol === 'cobrador') {
+        $cobrosSeleccionados = array_filter(array_map('intval', (array)($data['cobros'] ?? [])));
+        if (empty($cobrosSeleccionados) && $cobro) $cobrosSeleccionados = [$cobro];
+
+        foreach ($cobrosSeleccionados as $cid) {
+            $stmtOtro = $db->prepare("
+                SELECT u.nombre FROM usuarios u
+                JOIN usuario_cobro uc ON uc.usuario_id = u.id
+                WHERE uc.cobro_id = ? AND u.rol = 'cobrador' AND u.activo = 1
+                LIMIT 1
+            ");
+            $stmtOtro->execute([$cid]);
+            $otroCobrador = $stmtOtro->fetch();
+            if ($otroCobrador) {
+                $stmtC = $db->prepare("SELECT nombre FROM cobros WHERE id=?");
+                $stmtC->execute([$cid]);
+                $nombreCobro = $stmtC->fetchColumn();
+                echo json_encode([
+                    'ok'  => false,
+                    'msg' => 'El cobro "' . $nombreCobro . '" ya tiene activo al cobrador "' . $otroCobrador['nombre'] . '". Debes desactivarlo primero.'
+                ]); exit;
+            }
+        }
+    }
+
     $db->beginTransaction();
     try {
         $db->prepare("INSERT INTO usuarios (nombre, email, password_hash, rol) VALUES (?,?,?,?)")
@@ -73,18 +118,12 @@ if ($action === 'crear') {
         $uid = (int)$db->lastInsertId();
 
         if ($rol === 'cobrador') {
-            // Asignar los cobros seleccionados
-            $cobrosSeleccionados = $data['cobros'] ?? [];
-            if (empty($cobrosSeleccionados)) {
-                // Si no seleccionó ninguno, asignar el cobro activo por defecto
-                if ($cobro) asignarCobroACobrador($db, $uid, $cobro);
-            } else {
-                foreach ($cobrosSeleccionados as $cid) {
-                    asignarCobroACobrador($db, $uid, (int)$cid);
-                }
+            $cobrosSeleccionados = array_filter(array_map('intval', (array)($data['cobros'] ?? [])));
+            if (empty($cobrosSeleccionados) && $cobro) $cobrosSeleccionados = [$cobro];
+            foreach ($cobrosSeleccionados as $cid) {
+                asignarCobroACobrador($db, $uid, $cid);
             }
         } else {
-            // Admin/consulta — asignar al cobro activo con permisos granulares
             if (!empty($data['asignar_cobro']) && $cobro) {
                 $esAdmin = in_array($rol, ['admin','superadmin']);
                 $db->prepare("INSERT INTO usuario_cobro (
@@ -100,9 +139,9 @@ if ($action === 'crear') {
                 ) VALUES (?,?,1,1,1,1,1,1,1,?,1,1,1,1,1,1,1,1,?,?)")
                 ->execute([
                     $uid, $cobro,
-                    $esAdmin ? 1 : 0,  // puede_ver_reportes
-                    $esAdmin ? 1 : 0,  // puede_ver_configuracion
-                    $esAdmin ? 1 : 0,  // puede_exportar
+                    $esAdmin ? 1 : 0,
+                    $esAdmin ? 1 : 0,
+                    $esAdmin ? 1 : 0,
                 ]);
             }
         }
@@ -241,31 +280,90 @@ if ($action === 'crear') {
 
 // ============================================================
 // ASIGNAR COBROS A COBRADOR
+// REGLA: Solo 1 cobrador activo por cobro.
+//        No se puede quitar cobro si hay liquidación abierta.
 // ============================================================
 } elseif ($action === 'asignar_cobros') {
     $uid    = (int)($data['usuario_id'] ?? 0);
-    $cobros = $data['cobros'] ?? [];
+    $cobros = array_filter(array_map('intval', (array)($data['cobros'] ?? [])));
 
     if (!$uid) { echo json_encode(['ok'=>false,'msg'=>'Usuario inválido']); exit; }
 
-    $chk = $db->prepare("SELECT rol FROM usuarios WHERE id=? AND activo=1");
-    $chk->execute([$uid]);
-    $u = $chk->fetch();
-    if (!$u) { echo json_encode(['ok'=>false,'msg'=>'Usuario no encontrado']); exit; }
-    if ($u['rol'] !== 'cobrador') { echo json_encode(['ok'=>false,'msg'=>'Solo aplica para cobradores']); exit; }
+    $stmtU = $db->prepare("SELECT id, nombre, rol FROM usuarios WHERE id=?");
+    $stmtU->execute([$uid]);
+    $usuario = $stmtU->fetch();
+    if (!$usuario) { echo json_encode(['ok'=>false,'msg'=>'Usuario no encontrado']); exit; }
+    if ($usuario['rol'] !== 'cobrador') {
+        echo json_encode(['ok'=>false,'msg'=>'Solo aplica para cobradores']); exit;
+    }
+
+    // Verificar cobrador único por cobro en los cobros nuevos a agregar
+    $stmtActuales = $db->prepare("SELECT cobro_id FROM usuario_cobro WHERE usuario_id=?");
+    $stmtActuales->execute([$uid]);
+    $cobrosActuales = array_column($stmtActuales->fetchAll(), 'cobro_id');
+
+    $agregar = array_diff($cobros, $cobrosActuales);
+    $quitar  = array_diff($cobrosActuales, $cobros);
+
+    // Verificar que los cobros nuevos no tengan otro cobrador activo
+    foreach ($agregar as $cid) {
+        $stmtOtro = $db->prepare("
+            SELECT u.nombre FROM usuarios u
+            JOIN usuario_cobro uc ON uc.usuario_id = u.id
+            WHERE uc.cobro_id = ? AND u.rol = 'cobrador' AND u.activo = 1 AND u.id != ?
+            LIMIT 1
+        ");
+        $stmtOtro->execute([$cid, $uid]);
+        $otroCobrador = $stmtOtro->fetch();
+        if ($otroCobrador) {
+            $stmtC = $db->prepare("SELECT nombre FROM cobros WHERE id=?");
+            $stmtC->execute([$cid]);
+            $nombreCobro = $stmtC->fetchColumn();
+            echo json_encode([
+                'ok'  => false,
+                'msg' => 'El cobro "' . $nombreCobro . '" ya tiene activo al cobrador "' . $otroCobrador['nombre'] . '". Debes desactivarlo primero para poder asignar uno nuevo.'
+            ]); exit;
+        }
+    }
+
+    // Verificar que no se quite un cobro con liquidación abierta
+    foreach ($quitar as $cid) {
+        $stmtLiq = $db->prepare("
+            SELECT l.id, c.nombre AS cobro_nombre
+            FROM liquidaciones l
+            JOIN cobros c ON c.id = l.cobro_id
+            WHERE l.cobro_id = ? AND l.estado = 'borrador' AND l.base_trabajado > 0
+            LIMIT 1
+        ");
+        $stmtLiq->execute([$cid]);
+        $liqAbierta = $stmtLiq->fetch();
+        if ($liqAbierta) {
+            echo json_encode([
+                'ok'  => false,
+                'msg' => 'No se puede quitar el cobro "' . $liqAbierta['cobro_nombre'] . '" — hay una liquidación abierta con base entregada. Cierra la liquidación primero.'
+            ]); exit;
+        }
+    }
 
     $db->beginTransaction();
     try {
-        // Eliminar asignaciones actuales
-        $db->prepare("DELETE FROM usuario_cobro WHERE usuario_id=?")->execute([$uid]);
-
-        // Insertar las nuevas
-        foreach ($cobros as $cid) {
-            asignarCobroACobrador($db, $uid, (int)$cid);
+        // Quitar cobros deseleccionados
+        foreach ($quitar as $cid) {
+            $db->prepare("DELETE FROM usuario_cobro WHERE usuario_id=? AND cobro_id=?")
+               ->execute([$uid, $cid]);
         }
-
+        // Agregar cobros nuevos
+        foreach ($agregar as $cid) {
+            asignarCobroACobrador($db, $uid, $cid);
+        }
         $db->commit();
-        echo json_encode(['ok'=>true,'msg'=>'Cobros asignados correctamente']);
+
+        $totalCobros = count($cobros);
+        $msg = $totalCobros > 0
+            ? 'Cobros actualizados — ' . $totalCobros . ' cobro(s) asignado(s)'
+            : 'Todos los cobros fueron quitados al cobrador';
+        echo json_encode(['ok'=>true,'msg'=>$msg]);
+
     } catch (Exception $e) {
         $db->rollBack();
         echo json_encode(['ok'=>false,'msg'=>'Error: '.$e->getMessage()]);
@@ -273,6 +371,8 @@ if ($action === 'crear') {
 
 // ============================================================
 // ACTIVAR / DESACTIVAR
+// REGLA: No se puede desactivar un cobrador si ya inició el
+//        día (tiene liquidación borrador con base_trabajado > 0)
 // ============================================================
 } elseif (in_array($action, ['activar','desactivar'])) {
     $id = (int)($data['id'] ?? 0);
@@ -280,6 +380,22 @@ if ($action === 'crear') {
 
     if ($id === (int)$_SESSION['usuario_id']) {
         echo json_encode(['ok'=>false,'msg'=>'No puedes desactivarte a ti mismo']); exit;
+    }
+
+    $stmtU = $db->prepare("SELECT id, nombre, rol FROM usuarios WHERE id=?");
+    $stmtU->execute([$id]);
+    $usuario = $stmtU->fetch();
+    if (!$usuario) { echo json_encode(['ok'=>false,'msg'=>'Usuario no encontrado']); exit; }
+
+    // Si es cobrador y se quiere desactivar → verificar liquidación abierta
+    if ($action === 'desactivar' && $usuario['rol'] === 'cobrador') {
+        $liq = liquidacionAbierta($db, $id);
+        if ($liq) {
+            echo json_encode([
+                'ok'  => false,
+                'msg' => 'No se puede inactivar a "' . $usuario['nombre'] . '" — ya inició el día en el cobro "' . $liq['cobro_nombre'] . '" con base entregada de $' . number_format($liq['base_trabajado'], 0, ',', '.') . '. Debe cerrar la liquidación primero.'
+            ]); exit;
+        }
     }
 
     $activo = $action === 'activar' ? 1 : 0;

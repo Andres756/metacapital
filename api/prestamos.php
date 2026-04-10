@@ -44,7 +44,6 @@ if ($action === 'crear') {
         echo json_encode(['ok'=>false,'msg'=>'Datos incompletos']); exit;
     }
 
-    // Verificar clavo
     $nombreClavo = esClavo($db, $deudor_id);
     if ($nombreClavo) {
         echo json_encode(['ok'=>false,'msg'=>"No se puede crear un préstamo a $nombreClavo — está marcado como CLAVO."]); exit;
@@ -77,7 +76,7 @@ if ($action === 'crear') {
 
     $db->beginTransaction();
     try {
-        // Validar saldo de caja
+        // Validar saldo de caja — solo base (origen capital/liquidacion)
         $saldo = getSaldoCaja($db, $cobro);
         if ($saldo < $monto) {
             $db->rollBack();
@@ -100,13 +99,11 @@ if ($action === 'crear') {
             ($data['capitalista_id'] ?? null) ?: null,
             $monto, $tipo_int, $interes_val, $interes_calc, $total,
             $frecuencia, $num_cuotas, $valor_cuota,
-            $fecha_ini, $fechaFin,
-            $total,
+            $fecha_ini, $fechaFin, $total,
             $data['tipo_origen'] ?? 'nuevo',
             $data['observaciones'] ?? null,
             !empty($data['omitir_domingos']) ? 1 : 0,
-            $papeleria_pct,
-            $papeleria_monto,
+            $papeleria_pct, $papeleria_monto,
             $_SESSION['usuario_id']
         ]);
         $prestamo_id     = (int)$db->lastInsertId();
@@ -114,7 +111,7 @@ if ($action === 'crear') {
 
         generarCuotas($db, $prestamo_id, $cobro, $fecha_ini, $frecuencia, $num_cuotas, $valor_cuota, $total, $omitir_domingos);
 
-        // Registrar papelería
+        // Papelería
         if ($papeleria_monto > 0) {
             $stmtCob = $db->prepare("
                 SELECT u.id FROM usuarios u
@@ -134,10 +131,11 @@ if ($action === 'crear') {
             ]);
         }
 
-        // Movimiento de caja
+        // ── CAMBIO FASE 3: origen='cobrador' — NO afecta la base general
+        // El préstamo sale de la base de trabajo del cobrador, no de la caja
         $db->prepare("INSERT INTO capital_movimientos
-            (cobro_id, tipo, es_entrada, monto, metodo_pago, capitalista_id, prestamo_id, descripcion, fecha, usuario_id)
-            VALUES (?, 'prestamo', 0, ?, ?, ?, ?, ?, ?, ?)")
+            (cobro_id, tipo, origen, es_entrada, monto, metodo_pago, capitalista_id, prestamo_id, descripcion, fecha, usuario_id)
+            VALUES (?, 'prestamo', 'cobrador', 0, ?, ?, ?, ?, ?, ?, ?)")
         ->execute([
             $cobro, $monto, $metodo_pago,
             ($data['capitalista_id'] ?? null) ?: null,
@@ -206,10 +204,8 @@ if ($action === 'crear') {
             VALUES (?,?,?,?,?,?,?,?,?,?)")
         ->execute([
             $cobro, $prestamo_id, $cuota_id, $prestamo['deudor_id'],
-            $monto_aplicar, $fecha_pago,
-            $metodo_pago, 0,
-            $data['observacion'] ?? null,
-            $_SESSION['usuario_id']
+            $monto_aplicar, $fecha_pago, $metodo_pago, 0,
+            $data['observacion'] ?? null, $_SESSION['usuario_id']
         ]);
         $pago_id_principal = (int)$db->lastInsertId();
 
@@ -240,8 +236,7 @@ if ($action === 'crear') {
                     VALUES (?,?,?,?,?,?,?,?,?,?)")
                 ->execute([
                     $cobro, $prestamo_id, $sc['id'], $prestamo['deudor_id'],
-                    $aplicar, $fecha_pago,
-                    $metodo_pago,
+                    $aplicar, $fecha_pago, $metodo_pago,
                     $sc2 > 0 ? 1 : 0,
                     'Excedente de cuota #'.$cuota['numero_cuota'],
                     $_SESSION['usuario_id']
@@ -265,10 +260,11 @@ if ($action === 'crear') {
         $db->prepare("UPDATE prestamos SET saldo_pendiente=?, estado=?, updated_at=NOW() WHERE id=?")
            ->execute([$nuevo_saldo, $nuevo_estado, $prestamo_id]);
 
-        // Movimiento de caja
+        // ── CAMBIO FASE 3: origen='cobrador' — el cobro lo maneja el cobrador
+        // Solo se registra para auditoría, NO afecta la base general
         $db->prepare("INSERT INTO capital_movimientos
-            (cobro_id, tipo, es_entrada, monto, metodo_pago, capitalista_id, prestamo_id, pago_id, descripcion, fecha, usuario_id)
-            VALUES (?, 'cobro_cuota', 1, ?, ?, ?, ?, ?, ?, ?, ?)")
+            (cobro_id, tipo, origen, es_entrada, monto, metodo_pago, capitalista_id, prestamo_id, pago_id, descripcion, fecha, usuario_id)
+            VALUES (?, 'cobro_cuota', 'cobrador', 1, ?, ?, ?, ?, ?, ?, ?, ?)")
         ->execute([
             $cobro, $monto, $metodo_pago,
             ($prestamo['capitalista_id'] ?: null),
@@ -369,6 +365,8 @@ if ($action === 'crear') {
         $db->prepare("UPDATE cuotas SET estado='pagado', updated_at=NOW() WHERE prestamo_id=? AND estado NOT IN ('pagado','anulado')")
            ->execute([$prestamo_id]);
 
+        // ── CAMBIO FASE 3: diferencia de renovación — origen='cobrador'
+        // El cobrador maneja el efectivo, solo se registra para auditoría
         if (abs($diferencia) >= 1) {
             $es_entrada  = $diferencia < 0 ? 1 : 0;
             $monto_mov   = round(abs($diferencia), 2);
@@ -376,8 +374,8 @@ if ($action === 'crear') {
                 ? "Diferencia renovación préstamo #$prestamo_id (cobrador entregó al deudor)"
                 : "Diferencia renovación préstamo #$prestamo_id (deudor entregó saldo)";
             $db->prepare("INSERT INTO capital_movimientos
-                (cobro_id, tipo, es_entrada, monto, metodo_pago, capitalista_id, prestamo_id, descripcion, fecha, usuario_id)
-                VALUES (?, 'prestamo', ?, ?, ?, ?, ?, ?, CURDATE(), ?)")
+                (cobro_id, tipo, origen, es_entrada, monto, metodo_pago, capitalista_id, prestamo_id, descripcion, fecha, usuario_id)
+                VALUES (?, 'prestamo', 'cobrador', ?, ?, ?, ?, ?, ?, CURDATE(), ?)")
                ->execute([
                    $cobro, $es_entrada, $monto_mov, $metodo_pago,
                    $prestamo['capitalista_id'] ?: null,
@@ -542,7 +540,7 @@ if ($action === 'anular') {
         echo json_encode(['ok'=>false,'msg'=>'No se puede anular: el préstamo tiene pagos registrados']); exit;
     }
 
-    $chkAntes = $db->prepare("SELECT COUNT(*) FROM capital_movimientos WHERE prestamo_id=? AND es_entrada=0 AND (anulado=0 OR anulado IS NULL)");
+    $chkAntes = $db->prepare("SELECT COUNT(*) FROM capital_movimientos WHERE prestamo_id=? AND es_entrada=0 AND origen='cobrador' AND (anulado=0 OR anulado IS NULL)");
     $chkAntes->execute([$prestamo_id]);
     $movActivos = (int)$chkAntes->fetchColumn();
 
@@ -556,14 +554,14 @@ if ($action === 'anular') {
            ->execute([$prestamo_id]);
 
         $db->prepare("UPDATE capital_movimientos SET anulado=1, anulado_at=NOW(), anulado_por=?
-                      WHERE prestamo_id=? AND tipo='prestamo' AND es_entrada=0 AND (anulado=0 OR anulado IS NULL)")
+                      WHERE prestamo_id=? AND tipo='prestamo' AND origen='cobrador' AND (anulado=0 OR anulado IS NULL)")
            ->execute([$_SESSION['usuario_id'], $prestamo_id]);
 
         $db->commit();
 
-        $msg = 'Préstamo anulado. El capital y los saldos fueron revertidos.';
+        $msg = 'Préstamo anulado.';
         if ($movActivos === 0) {
-            $msg .= ' (Advertencia: no se encontró movimiento de caja asociado — revisa manualmente.)';
+            $msg .= ' (Sin movimiento de caja asociado — datos de auditoría correctos.)';
         }
         echo json_encode(['ok'=>true,'msg'=>$msg]);
 
@@ -652,11 +650,11 @@ if ($action === 'editar') {
 
         $db->prepare("UPDATE prestamos SET saldo_pendiente=? WHERE id=?")->execute([$saldo_correcto, $prestamo_id]);
 
-        // Actualizar movimiento de caja si cambió el monto
+        // Actualizar movimiento de cobrador si cambió el monto
         if ((float)$prestamo['monto_prestado'] != $monto) {
             $db->prepare("UPDATE capital_movimientos
                 SET monto=?, descripcion='Préstamo #{$prestamo_id} editado — nuevo monto'
-                WHERE prestamo_id=? AND tipo='prestamo' AND es_entrada=0 AND (anulado=0 OR anulado IS NULL)")
+                WHERE prestamo_id=? AND tipo='prestamo' AND origen='cobrador' AND es_entrada=0 AND (anulado=0 OR anulado IS NULL)")
             ->execute([$monto, $prestamo_id]);
         }
 
