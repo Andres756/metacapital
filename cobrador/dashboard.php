@@ -243,6 +243,9 @@ let vistaActual   = 'lista';
 let mapaListo     = false;
 let mapaObj       = null;
 let markers       = [];
+let pinCobrador   = null;
+let miLat         = null;
+let miLng         = null;
 
 // ─── Toggle vista ─────────────────────────────────────────────
 function setVista(v) {
@@ -256,10 +259,11 @@ function setVista(v) {
     document.getElementById('btn-tm').style.background   = esLista ? 'transparent' : 'var(--accent)';
     document.getElementById('btn-tm').style.color        = esLista ? 'var(--muted)' : '#fff';
     if (!esLista && !mapaListo) iniciarMapa();
+    // Si ya estaba listo y vuelvo al mapa, sincronizar con orden actual de la lista
+    if (!esLista && mapaListo) renumerarPorLista();
 }
 
 // ─── Iniciar mapa ─────────────────────────────────────────────
-// Primero pide GPS, luego pinta pines numerados por distancia
 function iniciarMapa() {
     if (typeof google === 'undefined') return;
 
@@ -276,96 +280,140 @@ function iniciarMapa() {
         ]
     });
 
-    // Pintar mapa inmediatamente sin GPS para que no quede en blanco
-    pintarPines(null, null);
+    // Pintar pines inmediatamente sin GPS
+    pintarPines();
 
-    // Pedir GPS real del dispositivo — solo alta precisión, sin caché
-    if (!navigator.geolocation) return;
-
-    navigator.geolocation.getCurrentPosition(
-        pos => {
-            // Rechazar ubicaciones muy imprecisas (> 5km = probablemente por IP)
-            if (pos.coords.accuracy > 5000) {
-                console.warn('Ubicación demasiado imprecisa:', pos.coords.accuracy, 'm — reintentando');
-                // Reintentar forzando GPS del dispositivo
-                navigator.geolocation.getCurrentPosition(
-                    pos2 => actualizarUbicacion(pos2.coords.latitude, pos2.coords.longitude),
-                    err  => console.warn('GPS no disponible:', err.message),
-                    { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 }
-                );
-                return;
-            }
-            actualizarUbicacion(pos.coords.latitude, pos.coords.longitude);
-        },
-        err => console.warn('GPS error:', err.message),
-        { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 }
-    );
-}
-
-let pinCobrador = null;
-
-function actualizarUbicacion(miLat, miLng) {
-    // Redibujar pines con la ubicación real
-    pintarPines(miLat, miLng);
-
-    // Pin verde del cobrador — actualizar o crear
-    if (pinCobrador) pinCobrador.setMap(null);
+    // Pin verde arrastrable — aparece en el centro del mapa
+    // El cobrador lo mueve a donde está parado
+    const centroColombia = { lat: 5.5353, lng: -73.3678 };
     pinCobrador = new google.maps.Marker({
-        position: { lat: miLat, lng: miLng },
+        position: centroColombia,
         map: mapaObj,
+        draggable: true,
         icon: {
             path: google.maps.SymbolPath.CIRCLE,
-            scale: 11,
+            scale: 13,
             fillColor: '#22c55e',
             fillOpacity: 1,
             strokeColor: '#fff',
-            strokeWeight: 2,
+            strokeWeight: 3,
         },
-        title: 'Mi ubicación',
+        title: '📍 Arrastra este pin a tu ubicación actual',
         zIndex: 999,
+        animation: google.maps.Animation.BOUNCE,
     });
-    // Centrar mapa en el cobrador la primera vez
-    mapaObj.setCenter({ lat: miLat, lng: miLng });
-    mapaObj.setZoom(14);
+
+    // Hint al usuario
+    mostrarHintPin();
+
+    // Al mover el pin verde → recalcular orden
+    pinCobrador.addListener('dragstart', () => {
+        pinCobrador.setAnimation(null);
+        ocultarHintPin();
+    });
+    pinCobrador.addListener('dragend', () => {
+        const pos = pinCobrador.getPosition();
+        miLat = pos.lat();
+        miLng = pos.lng();
+        renumerarPorDistancia();
+        // Guardar posición del cobrador en localStorage
+        localStorage.setItem(STORAGE_KEY + '_pos', JSON.stringify({ lat: miLat, lng: miLng }));
+    });
+
+    // Intentar GPS del dispositivo para posicionar el pin verde automáticamente
+    if (navigator.geolocation) {
+        navigator.geolocation.getCurrentPosition(
+            pos => {
+                if (pos.coords.accuracy > 5000) return; // rechazar si es por IP
+                miLat = pos.coords.latitude;
+                miLng = pos.coords.longitude;
+                pinCobrador.setPosition({ lat: miLat, lng: miLng });
+                pinCobrador.setAnimation(null);
+                mapaObj.setCenter({ lat: miLat, lng: miLng });
+                mapaObj.setZoom(14);
+                renumerarPorDistancia();
+                ocultarHintPin();
+            },
+            () => {
+                // GPS falló — restaurar posición guardada si existe
+                const saved = localStorage.getItem(STORAGE_KEY + '_pos');
+                if (saved) {
+                    try {
+                        const p = JSON.parse(saved);
+                        miLat = p.lat; miLng = p.lng;
+                        pinCobrador.setPosition({ lat: miLat, lng: miLng });
+                        pinCobrador.setAnimation(null);
+                        mapaObj.setCenter({ lat: miLat, lng: miLng });
+                        mapaObj.setZoom(14);
+                        renumerarPorDistancia();
+                        ocultarHintPin();
+                    } catch(e) {}
+                }
+            },
+            { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
+        );
+    }
+
+    mapaListo = true;
 }
 
-function pintarPines(miLat, miLng) {
+function mostrarHintPin() {
+    let hint = document.getElementById('hint-pin-mapa');
+    if (!hint) {
+        hint = document.createElement('div');
+        hint.id = 'hint-pin-mapa';
+        hint.style.cssText = 'position:absolute;top:10px;left:50%;transform:translateX(-50%);background:rgba(34,197,94,.9);color:#fff;padding:0.4rem 0.75rem;border-radius:20px;font-family:var(--font-mono);font-size:0.7rem;font-weight:600;z-index:200;pointer-events:none;white-space:nowrap';
+        hint.textContent = '📍 Arrastra el pin verde a tu ubicación';
+        document.getElementById('vista-mapa').style.position = 'relative';
+        document.getElementById('vista-mapa').appendChild(hint);
+    }
+    hint.style.display = 'block';
+}
+
+function ocultarHintPin() {
+    const hint = document.getElementById('hint-pin-mapa');
+    if (hint) hint.style.display = 'none';
+}
+
+// ─── Pintar todos los pines de clientes ───────────────────────
+function pintarPines() {
     markers.forEach(m => m.setMap(null));
     markers = [];
 
-    const bounds  = new google.maps.LatLngBounds();
-    let   hayPins = false;
+    const bounds = new google.maps.LatLngBounds();
+    let hayPins  = false;
 
-    // Separar los que toca cobrar hoy
-    const tocaHoy  = DEUDORES.filter(d => d.toca_hoy && d.lat && d.lng);
-    const resto    = DEUDORES.filter(d => !d.toca_hoy && d.lat && d.lng);
+    // Orden actual de la lista (respeta drag&drop del cobrador)
+    const ordenLista = Array.from(
+        document.querySelectorAll('#lista-deudores .cob-deudor-row')
+    ).map(f => parseInt(f.dataset.id));
 
-    // Ordenar los de hoy por distancia si tenemos GPS
-    if (miLat && miLng) {
-        tocaHoy.sort((a, b) => haversine(miLat, miLng, a.lat, a.lng)
-                              - haversine(miLat, miLng, b.lat, b.lng));
-    }
+    // Deudores de hoy en el orden de la lista
+    const tocaHoy = ordenLista
+        .map(id => DEUDORES.find(d => d.id === id && d.toca_hoy && d.lat && d.lng))
+        .filter(Boolean);
 
-    // Pintar los de hoy con número de orden
+    // Resto con GPS
+    const resto = DEUDORES.filter(d => !d.toca_hoy && d.lat && d.lng);
+
+    // Pines de hoy — numerados según orden actual
     tocaHoy.forEach((d, idx) => {
         hayPins = true;
         const pos   = { lat: d.lat, lng: d.lng };
         const color = d.mora > 0 ? '#f97316' : '#7c6aff';
         bounds.extend(pos);
-
         const m = new google.maps.Marker({
             position: pos, map: mapaObj,
             icon: { path: google.maps.SymbolPath.CIRCLE, scale: 15,
                     fillColor: color, fillOpacity: 1, strokeColor: '#fff', strokeWeight: 2 },
             label: { text: String(idx + 1), color: '#fff', fontSize: '10px', fontWeight: 'bold' },
-            title: d.nombre,
-            zIndex: 10,
+            title: d.nombre, zIndex: 10,
         });
         m.addListener('click', () => abrirSheet(d, color));
         markers.push(m);
     });
 
-    // Pintar el resto (no toca hoy) — pequeños y grises
+    // Pines grises del resto
     resto.forEach(d => {
         hayPins = true;
         bounds.extend({ lat: d.lat, lng: d.lng });
@@ -373,15 +421,52 @@ function pintarPines(miLat, miLng) {
             position: { lat: d.lat, lng: d.lng }, map: mapaObj,
             icon: { path: google.maps.SymbolPath.CIRCLE, scale: 8,
                     fillColor: '#4b4b6b', fillOpacity: 0.45, strokeColor: '#fff', strokeWeight: 1 },
-            title: d.nombre,
-            zIndex: 1,
+            title: d.nombre, zIndex: 1,
         });
         m.addListener('click', () => abrirSheet(d, '#4b4b6b'));
         markers.push(m);
     });
 
     if (hayPins) mapaObj.fitBounds(bounds);
-    mapaListo = true;
+}
+
+// ─── Renumerar según orden actual de la LISTA (drag&drop) ─────
+function renumerarPorLista() {
+    pintarPines();
+}
+
+// ─── Renumerar por distancia desde el pin verde ───────────────
+function renumerarPorDistancia() {
+    if (!miLat || !miLng) return;
+
+    // Reordenar también la lista
+    const lista  = document.getElementById('lista-deudores');
+    const filas  = Array.from(lista.querySelectorAll('.cob-deudor-row'));
+
+    const conUbic = filas.filter(f => {
+        const d = DEUDORES.find(x => x.id === parseInt(f.dataset.id) && x.toca_hoy);
+        return d && d.lat && d.lng;
+    });
+    const sinUbic = filas.filter(f => !conUbic.includes(f));
+
+    conUbic.sort((a, b) => {
+        const da = DEUDORES.find(x => x.id === parseInt(a.dataset.id));
+        const db = DEUDORES.find(x => x.id === parseInt(b.dataset.id));
+        return haversine(miLat, miLng, da.lat, da.lng) - haversine(miLat, miLng, db.lat, db.lng);
+    });
+
+    // Actualizar distancias en la lista
+    conUbic.forEach(f => {
+        const d    = DEUDORES.find(x => x.id === parseInt(f.dataset.id));
+        const dist = haversine(miLat, miLng, d.lat, d.lng);
+        const lbl  = f.querySelector('.dist-label');
+        if (lbl) lbl.textContent = ' · ' + (dist < 1 ? Math.round(dist*1000)+'m' : dist.toFixed(1)+'km');
+        lista.appendChild(f);
+    });
+    sinUbic.forEach(f => lista.appendChild(f));
+
+    guardarOrden();
+    pintarPines(); // redibuja con nuevo orden
 }
 
 function abrirSheet(d, color) {
@@ -404,13 +489,14 @@ function trazarRuta() {
 
     const pts = ordenIds
         .map(id => DEUDORES.find(d => d.id === id))
-        .filter(d => d && d.lat && d.lng);
+        .filter(d => d && d.lat && d.lng && d.toca_hoy);
 
-    if (!pts.length) { alert('Ningún cliente tiene ubicación GPS registrada.'); return; }
+    if (!pts.length) { alert('Ningún cliente tiene ubicación registrada.'); return; }
 
     const destino   = pts[pts.length - 1];
     const waypoints = pts.slice(0, -1).slice(0, 9);
     let url = 'https://www.google.com/maps/dir/?api=1';
+    if (miLat && miLng) url += '&origin=' + miLat + ',' + miLng;
     url += '&destination=' + destino.lat + ',' + destino.lng;
     if (waypoints.length) url += '&waypoints=' + waypoints.map(d => d.lat+','+d.lng).join('|');
     url += '&travelmode=driving';
@@ -424,7 +510,7 @@ function haversine(la1,lo1,la2,lo2) {
     return R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));
 }
 
-// ─── Persistencia ─────────────────────────────────────────────
+// ─── Persistencia orden lista ─────────────────────────────────
 function guardarOrden() {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(
         Array.from(document.querySelectorAll('#lista-deudores .cob-deudor-row')).map(f=>f.dataset.id)
@@ -445,27 +531,33 @@ function aplicarOrdenGuardado() {
     return true;
 }
 
-// ─── GPS ──────────────────────────────────────────────────────
+// ─── GPS botón Ordenar (lista) ────────────────────────────────
 function ordenarPorGPS() {
     const btn=document.getElementById('btn-gps');
     if (!navigator.geolocation) { alert('Sin soporte GPS'); return; }
     btn.innerHTML='⏳'; btn.disabled=true;
 
     navigator.geolocation.getCurrentPosition(pos => {
-        const {latitude:mlat, longitude:mlng} = pos.coords;
+        if (pos.coords.accuracy > 5000) {
+            btn.innerHTML='📍 Ordenar'; btn.disabled=false;
+            alert('GPS impreciso. En el mapa arrastra el pin verde a tu ubicación.');
+            return;
+        }
+        miLat = pos.coords.latitude;
+        miLng = pos.coords.longitude;
+
+        // Reordenar lista
         const lista=document.getElementById('lista-deudores');
         const filas=Array.from(lista.querySelectorAll('.cob-deudor-row'));
-
         filas.forEach(f => {
             const lat=parseFloat(f.dataset.lat), lng=parseFloat(f.dataset.lng);
             const lbl=f.querySelector('.dist-label');
             if (lat&&lng) {
-                const d=haversine(mlat,mlng,lat,lng);
+                const d=haversine(miLat,miLng,lat,lng);
                 f.dataset.dist=d;
                 if(lbl) lbl.textContent=' · '+(d<1?Math.round(d*1000)+'m':d.toFixed(1)+'km');
             } else { f.dataset.dist=99999; if(lbl) lbl.textContent=''; }
         });
-
         filas.sort((a,b)=>parseFloat(a.dataset.dist)-parseFloat(b.dataset.dist));
         filas.forEach(f=>lista.appendChild(f));
         guardarOrden();
@@ -474,17 +566,20 @@ function ordenarPorGPS() {
         document.getElementById('hint-drag').style.display='block';
         setTimeout(()=>{ btn.innerHTML='📍 Ordenar'; btn.style.color=''; }, 2500);
 
-        // Regenerar mapa si está abierto
-        if (vistaActual==='mapa') {
-            actualizarUbicacion(mlat, mlng);
+        // Sincronizar mapa si está abierto
+        if (vistaActual==='mapa' && mapaListo) {
+            pinCobrador.setPosition({ lat: miLat, lng: miLng });
+            pintarPines();
         }
-    }, ()=>{ btn.innerHTML='📍 Ordenar'; btn.disabled=false; alert('No se pudo obtener ubicación.'); },
-    { enableHighAccuracy:true, timeout:10000 });
+    }, () => {
+        btn.innerHTML='📍 Ordenar'; btn.disabled=false;
+        alert('No se pudo obtener ubicación. Usa el pin verde en el mapa.');
+    }, { enableHighAccuracy:true, timeout:15000, maximumAge:0 });
 }
 
 function resetOrden() { localStorage.removeItem(STORAGE_KEY); location.reload(); }
 
-// ─── Drag & Drop ──────────────────────────────────────────────
+// ─── Drag & Drop lista ────────────────────────────────────────
 let dragging=null, ph=null;
 
 const crearPH = h => {
@@ -520,6 +615,8 @@ function finDrag() {
     dragging=null; ph=null;
     guardarOrden();
     document.getElementById('hint-drag').style.display='block';
+    // Sincronizar mapa si está abierto
+    if (vistaActual==='mapa' && mapaListo) pintarPines();
 }
 
 function initDrag() {
