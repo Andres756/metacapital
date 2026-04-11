@@ -167,8 +167,7 @@ require_once __DIR__ . '/../includes/header.php';
     <button class="btn btn-ghost btn-sm" onclick="openModal('modal-categoria')">+ Nueva categoría</button>
   </div>
   <?php
-    $stmtCats = $db->prepare("SELECT * FROM categorias_gasto WHERE cobro_id=? ORDER BY nombre");
-    $stmtCats->execute([$cobro]);
+  $stmtCats = $db->query("SELECT * FROM categorias_gasto ORDER BY nombre");
     $categoriasGasto = $stmtCats->fetchAll();
   ?>
   <?php if (empty($categoriasGasto)): ?>

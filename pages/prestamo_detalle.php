@@ -6,27 +6,36 @@ if (!canDo('puede_ver_prestamos')) { include __DIR__ . '/403.php'; exit; }
 $db    = getDB();
 $cobro = cobroActivo();
 $id    = (int)($_GET['id'] ?? 0);
-$action= $_GET['action'] ?? '';
 
+// Sin filtro de cobro_id — el admin puede ver cualquier préstamo
 $stmt = $db->prepare("
     SELECT p.*, d.nombre AS deudor_nombre, d.telefono AS deudor_tel, d.id AS deudor_id,
+        co.nombre AS cobro_nombre,
         padre.id AS padre_id, padre_d.nombre AS padre_deudor
     FROM prestamos p
-    JOIN deudores d          ON d.id  = p.deudor_id
+    JOIN deudores d            ON d.id   = p.deudor_id
+    JOIN cobros co             ON co.id  = p.cobro_id
     LEFT JOIN prestamos padre  ON padre.id = p.prestamo_padre_id
     LEFT JOIN deudores padre_d ON padre_d.id = padre.deudor_id
-    WHERE p.id=? AND p.cobro_id=?
+    WHERE p.id=?
 ");
-$stmt->execute([$id, $cobro]);
+$stmt->execute([$id]);
 $p = $stmt->fetch();
 if (!$p) { header('Location: /pages/prestamos.php'); exit; }
+
+// Verificar que el usuario tiene acceso al cobro de ese préstamo
+if ($_SESSION['rol'] !== 'superadmin') {
+    $chk = $db->prepare("SELECT 1 FROM usuario_cobro WHERE usuario_id=? AND cobro_id=?");
+    $chk->execute([$_SESSION['usuario_id'], $p['cobro_id']]);
+    if (!$chk->fetch()) { include __DIR__ . '/403.php'; exit; }
+}
 
 // Cuotas
 $stmtC = $db->prepare("SELECT * FROM cuotas WHERE prestamo_id=? ORDER BY numero_cuota ASC");
 $stmtC->execute([$id]);
 $cuotas = $stmtC->fetchAll();
 
-// Pagos — sin JOIN a cuentas
+// Pagos
 $stmtPag = $db->prepare("
     SELECT pg.*, cu.numero_cuota, u.nombre AS usuario
     FROM pagos pg
@@ -39,7 +48,11 @@ $pagos = $stmtPag->fetchAll();
 $tienePagos = count(array_filter($pagos, fn($pg) => !$pg['anulado'])) > 0;
 
 // Gestiones
-$stmtG = $db->prepare("SELECT gc.*, u.nombre AS usuario FROM gestiones_cobro gc LEFT JOIN usuarios u ON u.id=gc.usuario_id WHERE gc.prestamo_id=? ORDER BY gc.fecha_gestion DESC LIMIT 10");
+$stmtG = $db->prepare("
+    SELECT gc.*, u.nombre AS usuario FROM gestiones_cobro gc
+    LEFT JOIN usuarios u ON u.id=gc.usuario_id
+    WHERE gc.prestamo_id=? ORDER BY gc.fecha_gestion DESC LIMIT 10
+");
 $stmtG->execute([$id]);
 $gestiones = $stmtG->fetchAll();
 
@@ -75,12 +88,13 @@ require_once __DIR__ . '/../includes/header.php';
 
 <div class="page-header page-header-row">
   <div>
-    <div style="display:flex;align-items:center;gap:0.75rem;margin-bottom:0.35rem">
+    <div style="display:flex;align-items:center;gap:0.75rem;margin-bottom:0.35rem;flex-wrap:wrap">
       <h1 style="font-size:1.8rem">PRÉSTAMO #<?= $id ?></h1>
       <span class="badge <?= $estadoClass ?>"><?= strtoupper($p['estado']) ?></span>
       <?php if ($p['tipo_origen'] !== 'nuevo'): ?>
       <span class="badge badge-muted"><?= strtoupper($p['tipo_origen']) ?></span>
       <?php endif; ?>
+      <span class="badge badge-muted" style="font-size:0.62rem"><?= htmlspecialchars($p['cobro_nombre']) ?></span>
     </div>
     <p>// <?= htmlspecialchars($p['deudor_nombre']) ?> · <?= htmlspecialchars($p['deudor_tel'] ?? '—') ?></p>
   </div>
@@ -114,9 +128,7 @@ require_once __DIR__ . '/../includes/header.php';
 <?php endif; ?>
 
 <div style="display:grid;grid-template-columns:2fr 1fr;gap:1.5rem">
-
   <div>
-    <!-- Info préstamo -->
     <div class="card mb-2">
       <div class="card-body">
         <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:1rem;margin-bottom:1rem">
@@ -146,7 +158,7 @@ require_once __DIR__ . '/../includes/header.php';
         </div>
         <div style="display:flex;gap:2rem;margin-top:0.75rem;font-family:var(--font-mono);font-size:0.72rem;color:var(--muted)">
           <span>📅 Inicio: <?= date('d M Y',strtotime($p['fecha_inicio'])) ?></span>
-          <span>🏁 Fecha fin: <?= date('d M Y',strtotime($p['fecha_fin_esperada'])) ?></span>
+          <span>🏁 Fin: <?= date('d M Y',strtotime($p['fecha_fin_esperada'])) ?></span>
           <span>📆 <?= ucfirst($p['frecuencia_pago']) ?> · <?= $p['num_cuotas'] ?> cuotas de <?= fmt($p['valor_cuota']) ?></span>
         </div>
       </div>
@@ -203,7 +215,6 @@ require_once __DIR__ . '/../includes/header.php';
       </div>
     </div>
 
-    <!-- HISTORIAL DE PAGOS -->
     <?php if (!empty($pagos)): ?>
     <div class="card mt-2">
       <div class="card-header"><span class="card-title">PAGOS RECIBIDOS</span></div>
@@ -225,8 +236,7 @@ require_once __DIR__ . '/../includes/header.php';
                   <span class="badge" style="background:rgba(239,68,68,.15);color:#ef4444">ANULADO</span>
                 <?php elseif (canDo('puede_anular_pago')): ?>
                   <button class="btn btn-ghost btn-sm" style="color:#ef4444;padding:2px 8px"
-                    onclick="anularPago(<?= $pg['id'] ?>, <?= $pg['numero_cuota'] ?>)"
-                    title="Anular pago">✕</button>
+                    onclick="anularPago(<?= $pg['id'] ?>, <?= $pg['numero_cuota'] ?>)">✕</button>
                 <?php endif; ?>
               </td>
             </tr>
@@ -238,18 +248,19 @@ require_once __DIR__ . '/../includes/header.php';
     <?php endif; ?>
   </div>
 
-  <!-- DERECHA -->
+  <!-- PANEL LATERAL -->
   <div>
     <div class="card mb-2">
       <div class="card-header"><span class="card-title">DATOS</span></div>
       <div class="card-body">
         <?php
-          $rows = [
-            'Deudor'   => '<a href="/pages/deudor_detalle.php?id='.$p['deudor_id'].'">'.htmlspecialchars($p['deudor_nombre']).'</a>',
-            'Teléfono' => htmlspecialchars($p['deudor_tel']??'—'),
-            'Mora'     => $p['dias_mora']>0 ? '<span class="text-orange">'.$p['dias_mora'].' días</span>' : '<span class="text-green">Sin mora</span>',
-          ];
-          foreach ($rows as $l => $v):
+        $rows = [
+          'Deudor'  => '<a href="/pages/deudor_detalle.php?id='.$p['deudor_id'].'">'.htmlspecialchars($p['deudor_nombre']).'</a>',
+          'Cobro'   => htmlspecialchars($p['cobro_nombre']),
+          'Teléfono'=> htmlspecialchars($p['deudor_tel']??'—'),
+          'Mora'    => $p['dias_mora']>0 ? '<span class="text-orange">'.$p['dias_mora'].' días</span>' : '<span class="text-green">Sin mora</span>',
+        ];
+        foreach ($rows as $l => $v):
         ?>
         <div style="display:flex;justify-content:space-between;padding:0.4rem 0;border-bottom:1px solid var(--border);font-family:var(--font-mono);font-size:0.72rem">
           <span style="color:var(--muted)"><?= $l ?></span>
@@ -286,7 +297,7 @@ require_once __DIR__ . '/../includes/header.php';
   </div>
 </div>
 
-<!-- MODAL PAGO -->
+<!-- MODALES — igual que el original -->
 <div class="modal-overlay" id="modal-pago">
   <div class="modal">
     <div class="modal-header">
@@ -308,25 +319,14 @@ require_once __DIR__ . '/../includes/header.php';
               <?php endforeach; ?>
             </select>
           </div>
-          <div class="field">
-            <label>Monto recibido <span class="required">*</span></label>
-            <input type="number" id="pago-monto" name="monto_pagado" step="1000" min="1" required>
-          </div>
-          <div class="field">
-            <label>Fecha de pago</label>
-            <input type="date" name="fecha_pago" value="<?= date('Y-m-d') ?>">
-          </div>
-          <div class="field">
-            <label>Método de pago</label>
-            <select name="metodo_pago">
-              <option value="efectivo">Efectivo</option>
-              <option value="banco">Banco</option>
-            </select>
-          </div>
-          <div class="field field-span2">
-            <label>Observación</label>
-            <input type="text" name="observacion" placeholder="Opcional">
-          </div>
+          <div class="field"><label>Monto recibido <span class="required">*</span></label>
+            <input type="number" id="pago-monto" name="monto_pagado" step="1000" min="1" required></div>
+          <div class="field"><label>Fecha de pago</label>
+            <input type="date" name="fecha_pago" value="<?= date('Y-m-d') ?>"></div>
+          <div class="field"><label>Método de pago</label>
+            <select name="metodo_pago"><option value="efectivo">Efectivo</option><option value="banco">Banco</option></select></div>
+          <div class="field field-span2"><label>Observación</label>
+            <input type="text" name="observacion" placeholder="Opcional"></div>
         </div>
       </form>
     </div>
@@ -337,7 +337,6 @@ require_once __DIR__ . '/../includes/header.php';
   </div>
 </div>
 
-<!-- MODAL RENOVAR -->
 <div class="modal-overlay" id="modal-renovar">
   <div class="modal" style="max-width:560px">
     <div class="modal-header">
@@ -347,7 +346,6 @@ require_once __DIR__ . '/../includes/header.php';
     <div class="modal-body">
       <form id="form-renovar">
         <input type="hidden" name="prestamo_id" value="<?= $p['id'] ?>">
-
         <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0.75rem;margin-bottom:1.25rem">
           <div style="padding:0.75rem;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);text-align:center">
             <div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:0.25rem">Saldo pendiente</div>
@@ -362,27 +360,16 @@ require_once __DIR__ . '/../includes/header.php';
             <div style="font-weight:700;font-size:1rem;color:var(--danger)" id="ren-diferencia-display">—</div>
           </div>
         </div>
-
         <div class="form-grid">
           <div class="field">
             <label>Monto de renovación <span class="required">*</span></label>
             <input type="number" id="ren-monto" name="monto_renovacion"
                    value="<?= max($p['monto_prestado'], $p['saldo_pendiente']) ?>"
-                   min="<?= $p['saldo_pendiente'] ?>"
-                   step="1000" oninput="calcRenovacion()" required>
-            <div style="font-size:0.68rem;color:var(--muted);margin-top:0.25rem;font-family:var(--font-mono)">
-              Mínimo: <?= fmt($p['saldo_pendiente']) ?>
-            </div>
+                   min="<?= $p['saldo_pendiente'] ?>" step="1000" oninput="calcRenovacion()" required>
+            <div style="font-size:0.68rem;color:var(--muted);margin-top:0.25rem;font-family:var(--font-mono)">Mínimo: <?= fmt($p['saldo_pendiente']) ?></div>
           </div>
-
-          <div class="field">
-            <label>Método de pago</label>
-            <select name="metodo_pago">
-              <option value="efectivo">Efectivo</option>
-              <option value="banco">Banco</option>
-            </select>
-          </div>
-
+          <div class="field"><label>Método de pago</label>
+            <select name="metodo_pago"><option value="efectivo">Efectivo</option><option value="banco">Banco</option></select></div>
           <div class="field">
             <label id="ren-label-interes">Interés (%)</label>
             <div style="display:flex;gap:0.5rem">
@@ -390,67 +377,36 @@ require_once __DIR__ . '/../includes/header.php';
                 <option value="porcentaje" <?= $p['tipo_interes']==='porcentaje'?'selected':'' ?>>% Porcentaje</option>
                 <option value="valor_fijo" <?= $p['tipo_interes']==='valor_fijo'?'selected':'' ?>>$ Valor fijo</option>
               </select>
-              <input type="number" id="ren-interes" name="interes_valor"
-                     value="<?= $p['interes_valor'] ?>" step="0.5" min="0"
-                     oninput="calcRenovacion()" style="flex:1">
+              <input type="number" id="ren-interes" name="interes_valor" value="<?= $p['interes_valor'] ?>" step="0.5" min="0" oninput="calcRenovacion()" style="flex:1">
             </div>
           </div>
-
-          <div class="field">
-            <label>Número de cuotas</label>
-            <input type="number" id="ren-cuotas" name="num_cuotas"
-                   value="<?= $p['num_cuotas'] ?>" min="1" oninput="calcRenovacion()">
-          </div>
-
-          <div class="field">
-            <label>Frecuencia de pago</label>
+          <div class="field"><label>Número de cuotas</label>
+            <input type="number" id="ren-cuotas" name="num_cuotas" value="<?= $p['num_cuotas'] ?>" min="1" oninput="calcRenovacion()"></div>
+          <div class="field"><label>Frecuencia de pago</label>
             <select id="ren-frecuencia" name="frecuencia_pago" onchange="onRenFrecuenciaChange()">
               <option value="diario"    <?= $p['frecuencia_pago']==='diario'   ?'selected':'' ?>>Diario</option>
               <option value="semanal"   <?= $p['frecuencia_pago']==='semanal'  ?'selected':'' ?>>Semanal</option>
               <option value="quincenal" <?= $p['frecuencia_pago']==='quincenal'?'selected':'' ?>>Quincenal</option>
               <option value="mensual"   <?= $p['frecuencia_pago']==='mensual'  ?'selected':'' ?>>Mensual</option>
-            </select>
-          </div>
-
-          <div class="field" id="ren-domingo-wrap"
-               style="display:<?= $p['frecuencia_pago']==='diario'?'flex':'none' ?>;align-items:center;padding-top:1.5rem">
+            </select></div>
+          <div class="field" id="ren-domingo-wrap" style="display:<?= $p['frecuencia_pago']==='diario'?'flex':'none' ?>;align-items:center;padding-top:1.5rem">
             <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;font-weight:normal;margin:0">
-              <input type="checkbox" id="ren-domingos" name="omitir_domingos" value="1"
-                     <?= $p['omitir_domingos'] ? 'checked' : '' ?>>
+              <input type="checkbox" id="ren-domingos" name="omitir_domingos" value="1" <?= $p['omitir_domingos'] ? 'checked' : '' ?>>
               Omitir domingos
-            </label>
-          </div>
-
-          <div class="field field-span2">
-            <label>Nota <span style="color:var(--muted);font-weight:400">(opcional)</span></label>
-            <input type="text" name="nota_gestion" placeholder="Ej: Cliente solicita más plazo">
-          </div>
+            </label></div>
+          <div class="field field-span2"><label>Nota <span style="color:var(--muted);font-weight:400">(opcional)</span></label>
+            <input type="text" name="nota_gestion" placeholder="Ej: Cliente solicita más plazo"></div>
         </div>
-
         <div id="ren-preview" style="display:none;margin-top:0.75rem;padding:0.85rem 1rem;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius)">
           <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:0.5rem;text-align:center;font-size:0.78rem">
-            <div>
-              <div style="font-family:var(--font-mono);font-size:0.6rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px">Interés</div>
-              <div style="font-weight:700" id="ren-prev-interes">—</div>
-            </div>
-            <div>
-              <div style="font-family:var(--font-mono);font-size:0.6rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px">Total</div>
-              <div style="font-weight:700" id="ren-prev-total">—</div>
-            </div>
-            <div>
-              <div style="font-family:var(--font-mono);font-size:0.6rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px">Valor cuota</div>
-              <div style="font-weight:700;color:var(--accent)" id="ren-prev-cuota">—</div>
-            </div>
-            <div>
-              <div style="font-family:var(--font-mono);font-size:0.6rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px">Fecha fin</div>
-              <div style="font-weight:700" id="ren-prev-fecha">—</div>
-            </div>
+            <div><div style="font-family:var(--font-mono);font-size:0.6rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px">Interés</div><div style="font-weight:700" id="ren-prev-interes">—</div></div>
+            <div><div style="font-family:var(--font-mono);font-size:0.6rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px">Total</div><div style="font-weight:700" id="ren-prev-total">—</div></div>
+            <div><div style="font-family:var(--font-mono);font-size:0.6rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px">Valor cuota</div><div style="font-weight:700;color:var(--accent)" id="ren-prev-cuota">—</div></div>
+            <div><div style="font-family:var(--font-mono);font-size:0.6rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px">Fecha fin</div><div style="font-weight:700" id="ren-prev-fecha">—</div></div>
           </div>
         </div>
-
         <div id="ren-aviso-sinpagos" style="display:none;margin-top:0.75rem;padding:0.75rem;background:rgba(245,158,11,0.1);border:1px solid rgba(245,158,11,0.4);border-radius:var(--radius);font-size:0.78rem;color:#d97706">
-          ⚠ Este préstamo no tiene pagos registrados. El plazo venció el
-          <strong><?= $p['fecha_fin_esperada'] ? date('d/m/Y', strtotime($p['fecha_fin_esperada'])) : '—' ?></strong>.
+          ⚠ Este préstamo no tiene pagos registrados. El plazo venció el <strong><?= $p['fecha_fin_esperada'] ? date('d/m/Y', strtotime($p['fecha_fin_esperada'])) : '—' ?></strong>.
         </div>
       </form>
     </div>
@@ -461,29 +417,19 @@ require_once __DIR__ . '/../includes/header.php';
   </div>
 </div>
 
-<!-- MODAL ACUERDO -->
 <div class="modal-overlay" id="modal-acuerdo">
   <div class="modal" style="max-width:420px">
-    <div class="modal-header">
-      <h2>ACUERDO DE PAGO</h2>
-      <button class="modal-close" onclick="closeModal('modal-acuerdo')">✕</button>
-    </div>
+    <div class="modal-header"><h2>ACUERDO DE PAGO</h2><button class="modal-close" onclick="closeModal('modal-acuerdo')">✕</button></div>
     <div class="modal-body">
       <form id="form-acuerdo">
         <input type="hidden" name="prestamo_id" value="<?= $p['id'] ?>">
         <div class="form-grid">
-          <div class="field field-span2">
-            <label>Nota del acuerdo <span class="required">*</span></label>
-            <input type="text" name="nota_acuerdo" required placeholder="Ej: Llama el viernes, paga el lunes...">
-          </div>
-          <div class="field">
-            <label>Fecha compromiso</label>
-            <input type="date" name="fecha_compromiso" value="<?= date('Y-m-d', strtotime('+7 days')) ?>">
-          </div>
-          <div class="field field-span2">
-            <label>Nota de gestión <span style="color:var(--muted);font-weight:400">(opcional)</span></label>
-            <textarea name="nota_gestion" placeholder="Descripción adicional..." style="min-height:60px"></textarea>
-          </div>
+          <div class="field field-span2"><label>Nota del acuerdo <span class="required">*</span></label>
+            <input type="text" name="nota_acuerdo" required placeholder="Ej: Llama el viernes, paga el lunes..."></div>
+          <div class="field"><label>Fecha compromiso</label>
+            <input type="date" name="fecha_compromiso" value="<?= date('Y-m-d', strtotime('+7 days')) ?>"></div>
+          <div class="field field-span2"><label>Nota de gestión <span style="color:var(--muted);font-weight:400">(opcional)</span></label>
+            <textarea name="nota_gestion" placeholder="Descripción adicional..." style="min-height:60px"></textarea></div>
         </div>
       </form>
     </div>
@@ -494,46 +440,22 @@ require_once __DIR__ . '/../includes/header.php';
   </div>
 </div>
 
-<!-- MODAL GESTIÓN -->
 <div class="modal-overlay" id="modal-gestion">
   <div class="modal">
-    <div class="modal-header">
-      <h2>NUEVA GESTIÓN</h2>
-      <button class="modal-close" onclick="closeModal('modal-gestion')">✕</button>
-    </div>
+    <div class="modal-header"><h2>NUEVA GESTIÓN</h2><button class="modal-close" onclick="closeModal('modal-gestion')">✕</button></div>
     <div class="modal-body">
       <form id="form-gestion-rapida">
         <input type="hidden" name="prestamo_id" value="<?= $id ?>">
         <input type="hidden" name="deudor_id" value="<?= $p['deudor_id'] ?>">
         <input type="hidden" name="action" value="gestion">
         <div class="form-grid mb-2">
-          <div class="field">
-            <label>Tipo</label>
-            <select name="tipo">
-              <option value="llamada">Llamada</option>
-              <option value="visita">Visita</option>
-              <option value="whatsapp">WhatsApp</option>
-              <option value="acuerdo">Acuerdo</option>
-              <option value="nota">Nota</option>
-            </select>
-          </div>
-          <div class="field">
-            <label>Resultado</label>
-            <select name="resultado">
-              <option value="contactado">Contactado</option>
-              <option value="no_contesto">No contestó</option>
-              <option value="promesa_pago">Promesa de pago</option>
-              <option value="sin_resultado">Sin resultado</option>
-            </select>
-          </div>
-          <div class="field">
-            <label>Fecha</label>
-            <input type="date" name="fecha_gestion" value="<?= date('Y-m-d') ?>">
-          </div>
-          <div class="field field-span2">
-            <label>Nota <span class="required">*</span></label>
-            <textarea name="nota" required placeholder="Describe la gestión..."></textarea>
-          </div>
+          <div class="field"><label>Tipo</label>
+            <select name="tipo"><option value="llamada">Llamada</option><option value="visita">Visita</option><option value="whatsapp">WhatsApp</option><option value="acuerdo">Acuerdo</option><option value="nota">Nota</option></select></div>
+          <div class="field"><label>Resultado</label>
+            <select name="resultado"><option value="contactado">Contactado</option><option value="no_contesto">No contestó</option><option value="promesa_pago">Promesa de pago</option><option value="sin_resultado">Sin resultado</option></select></div>
+          <div class="field"><label>Fecha</label><input type="date" name="fecha_gestion" value="<?= date('Y-m-d') ?>"></div>
+          <div class="field field-span2"><label>Nota <span class="required">*</span></label>
+            <textarea name="nota" required placeholder="Describe la gestión..."></textarea></div>
         </div>
       </form>
     </div>
@@ -544,52 +466,20 @@ require_once __DIR__ . '/../includes/header.php';
   </div>
 </div>
 
-<!-- MODAL EDITAR -->
 <div class="modal-overlay" id="modal-editar-prestamo">
   <div class="modal">
-    <div class="modal-header">
-      <h2>EDITAR PRÉSTAMO #<?= $p['id'] ?></h2>
-      <button class="modal-close" onclick="closeModal('modal-editar-prestamo')">&#10005;</button>
-    </div>
+    <div class="modal-header"><h2>EDITAR PRÉSTAMO #<?= $p['id'] ?></h2><button class="modal-close" onclick="closeModal('modal-editar-prestamo')">✕</button></div>
     <div class="modal-body">
-      <div class="alert alert-warning" style="margin-bottom:1rem;font-size:0.8rem">
-        ⚠ Solo se puede editar mientras no tenga pagos registrados. Las cuotas se regenerarán.
-      </div>
+      <div class="alert alert-warning" style="margin-bottom:1rem;font-size:0.8rem">⚠ Solo se puede editar mientras no tenga pagos. Las cuotas se regenerarán.</div>
       <form id="form-editar-prestamo">
         <input type="hidden" name="id" value="<?= $p['id'] ?>">
         <div class="form-grid">
-          <div class="field">
-            <label>Monto prestado <span class="required">*</span></label>
-            <input type="number" name="monto_prestado" value="<?= $p['monto_prestado'] ?>" step="1000" min="1" required>
-          </div>
-          <div class="field">
-            <label>Tipo interés</label>
-            <select name="tipo_interes">
-              <option value="porcentaje" <?= $p['tipo_interes']==='porcentaje'?'selected':'' ?>>Porcentaje (%)</option>
-              <option value="valor_fijo" <?= $p['tipo_interes']==='valor_fijo'?'selected':'' ?>>Valor fijo ($)</option>
-            </select>
-          </div>
-          <div class="field">
-            <label>Interés</label>
-            <input type="number" name="interes_valor" value="<?= $p['interes_valor'] ?>" step="0.01" min="0">
-          </div>
-          <div class="field">
-            <label>Frecuencia</label>
-            <select name="frecuencia_pago">
-              <option value="diario"    <?= $p['frecuencia_pago']==='diario'?'selected':'' ?>>Diario</option>
-              <option value="semanal"   <?= $p['frecuencia_pago']==='semanal'?'selected':'' ?>>Semanal</option>
-              <option value="quincenal" <?= $p['frecuencia_pago']==='quincenal'?'selected':'' ?>>Quincenal</option>
-              <option value="mensual"   <?= $p['frecuencia_pago']==='mensual'?'selected':'' ?>>Mensual</option>
-            </select>
-          </div>
-          <div class="field">
-            <label>Número de cuotas</label>
-            <input type="number" name="num_cuotas" value="<?= $p['num_cuotas'] ?>" min="1" required>
-          </div>
-          <div class="field">
-            <label>Fecha inicio</label>
-            <input type="date" name="fecha_inicio" value="<?= $p['fecha_inicio'] ?>">
-          </div>
+          <div class="field"><label>Monto prestado <span class="required">*</span></label><input type="number" name="monto_prestado" value="<?= $p['monto_prestado'] ?>" step="1000" min="1" required></div>
+          <div class="field"><label>Tipo interés</label><select name="tipo_interes"><option value="porcentaje" <?= $p['tipo_interes']==='porcentaje'?'selected':'' ?>>Porcentaje (%)</option><option value="valor_fijo" <?= $p['tipo_interes']==='valor_fijo'?'selected':'' ?>>Valor fijo ($)</option></select></div>
+          <div class="field"><label>Interés</label><input type="number" name="interes_valor" value="<?= $p['interes_valor'] ?>" step="0.01" min="0"></div>
+          <div class="field"><label>Frecuencia</label><select name="frecuencia_pago"><option value="diario" <?= $p['frecuencia_pago']==='diario'?'selected':'' ?>>Diario</option><option value="semanal" <?= $p['frecuencia_pago']==='semanal'?'selected':'' ?>>Semanal</option><option value="quincenal" <?= $p['frecuencia_pago']==='quincenal'?'selected':'' ?>>Quincenal</option><option value="mensual" <?= $p['frecuencia_pago']==='mensual'?'selected':'' ?>>Mensual</option></select></div>
+          <div class="field"><label>Número de cuotas</label><input type="number" name="num_cuotas" value="<?= $p['num_cuotas'] ?>" min="1" required></div>
+          <div class="field"><label>Fecha inicio</label><input type="date" name="fecha_inicio" value="<?= $p['fecha_inicio'] ?>"></div>
         </div>
       </form>
     </div>
@@ -631,17 +521,17 @@ async function registrarPago() {
 }
 
 async function anularPago(pagoId, numeroCuota) {
-    if (!confirm('¿Anular el pago de la cuota #' + numeroCuota + '? La cuota volverá a estado pendiente y se revertirá el movimiento de caja.')) return;
+    if (!confirm('¿Anular el pago de la cuota #' + numeroCuota + '?')) return;
     const res = await apiPost('/api/pagos.php', { action: 'anular', pago_id: pagoId });
-    if (res.ok) { toast(res.msg, 'success'); setTimeout(() => location.reload(), 1200); }
-    else toast(res.msg || 'Error al anular pago', 'error');
+    if (res.ok) { toast(res.msg); setTimeout(() => location.reload(), 1200); }
+    else toast(res.msg || 'Error', 'error');
 }
 
 async function confirmarAnular(id) {
-    if (!confirm('¿Anular este préstamo? Se revertirán todos los movimientos de capital. Esta acción no se puede deshacer.')) return;
+    if (!confirm('¿Anular este préstamo? Esta acción no se puede deshacer.')) return;
     var res = await apiPost('/api/prestamos.php', { action: 'anular', id: id });
-    if (res.ok) { toast(res.msg, 'success'); setTimeout(() => location.reload(), 1200); }
-    else toast(res.msg || 'Error al anular', 'error');
+    if (res.ok) { toast(res.msg); setTimeout(() => location.reload(), 1200); }
+    else toast(res.msg || 'Error', 'error');
 }
 
 async function guardarEdicionPrestamo() {
@@ -651,7 +541,7 @@ async function guardarEdicionPrestamo() {
     btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> Guardando...';
     var res = await apiPost('/api/prestamos.php', data);
     btn.disabled = false; btn.innerHTML = 'GUARDAR CAMBIOS';
-    if (res.ok) { toast(res.msg, 'success'); closeModal('modal-editar-prestamo'); setTimeout(() => location.reload(), 1000); }
+    if (res.ok) { toast(res.msg); closeModal('modal-editar-prestamo'); setTimeout(() => location.reload(), 1000); }
     else toast(res.msg || 'Error', 'error');
 }
 
@@ -665,6 +555,7 @@ async function guardarGestionRapida() {
 
 const REN_SALDO       = <?= (float)$p['saldo_pendiente'] ?>;
 const REN_TIENE_PAGOS = <?= count($pagos) > 0 ? 'true' : 'false' ?>;
+const MONTO_ORIGINAL  = <?= (float)$p['monto_prestado'] ?>;
 
 function onRenFrecuenciaChange() {
     const freq = document.getElementById('ren-frecuencia').value;
@@ -690,7 +581,6 @@ function calcRenovacion() {
     else { divDif.textContent = '- ' + fmt(dif) + ' sale de caja'; divDif.style.color = 'var(--danger)'; }
 
     document.getElementById('ren-aviso-sinpagos').style.display = !REN_TIENE_PAGOS ? 'block' : 'none';
-
     if (monto < REN_SALDO) { document.getElementById('ren-preview').style.display = 'none'; return; }
 
     const intCalc  = tipoInt === 'porcentaje' ? monto * (intVal / 100) : intVal;
@@ -709,46 +599,30 @@ function calcRenovacion() {
 }
 
 async function guardarRenovacion() {
-    const monto          = parseFloat(document.getElementById('ren-monto').value) || 0;
-    const MONTO_ORIGINAL = <?= (float)$p['monto_prestado'] ?>;
-
+    const monto = parseFloat(document.getElementById('ren-monto').value) || 0;
     if (!monto || monto <= 0) { toast('Ingresa el monto de renovación', 'error'); return; }
     if (monto < REN_SALDO)    { toast('El monto no puede ser menor al saldo pendiente (' + fmt(REN_SALDO) + ')', 'error'); return; }
-
-    if (!REN_TIENE_PAGOS) {
-        if (!confirm('⚠ Este préstamo no tiene pagos registrados y el plazo ya venció.\n¿Confirmas que deseas renovarlo?')) return;
-    }
-
-    if (monto > MONTO_ORIGINAL) {
-        if (!confirm('⚠ El monto de renovación (' + fmt(monto) + ') es mayor al préstamo original (' + fmt(MONTO_ORIGINAL) + ').\n\n¿Confirmas que deseas renovar por este valor?')) return;
-    }
-
+    if (!REN_TIENE_PAGOS && !confirm('⚠ Sin pagos registrados y plazo vencido. ¿Confirmas renovar?')) return;
+    if (monto > MONTO_ORIGINAL && !confirm('⚠ Monto mayor al original. ¿Confirmas?')) return;
     const dif = monto - REN_SALDO;
-    if (dif > 0) {
-        if (!confirm('Se registrará una salida de caja de ' + fmt(dif) + '.\n¿El cobrador entregó ese dinero al deudor?')) return;
-    }
+    if (dif > 0 && !confirm('Sale de caja: ' + fmt(dif) + '. ¿Confirmas?')) return;
 
     const btn = document.getElementById('btn-renovar');
-    btn.disabled  = true;
-    btn.innerHTML = '<span class="spinner"></span> Procesando...';
-
-    const data   = Object.fromEntries(new FormData(document.getElementById('form-renovar')));
-    data.action  = 'renovar';
-
+    btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> Procesando...';
+    const data = Object.fromEntries(new FormData(document.getElementById('form-renovar')));
+    data.action = 'renovar';
     const res = await apiPost('/api/prestamos.php', data);
-    btn.disabled  = false;
-    btn.innerHTML = 'RENOVAR PRÉSTAMO';
-
-    if (res.ok) { toast(res.msg, 'success'); setTimeout(() => window.location = '/pages/prestamo_detalle.php?id=' + res.nuevo_id, 1200); }
+    btn.disabled = false; btn.innerHTML = 'RENOVAR PRÉSTAMO';
+    if (res.ok) { toast(res.msg); setTimeout(() => window.location = '/pages/prestamo_detalle.php?id=' + res.nuevo_id, 1200); }
     else toast(res.msg || 'Error al renovar', 'error');
 }
 
 async function guardarAcuerdo() {
     const data = Object.fromEntries(new FormData(document.getElementById('form-acuerdo')));
-    if (!(data.nota_acuerdo || '').trim()) { toast('La nota del acuerdo es obligatoria', 'error'); return; }
+    if (!(data.nota_acuerdo || '').trim()) { toast('La nota es obligatoria', 'error'); return; }
     data.action = 'acuerdo';
     const res = await apiPost('/api/prestamos.php', data);
-    if (res.ok) { toast(res.msg, 'success'); closeModal('modal-acuerdo'); setTimeout(() => location.reload(), 900); }
+    if (res.ok) { toast(res.msg); closeModal('modal-acuerdo'); setTimeout(() => location.reload(), 900); }
     else toast(res.msg || 'Error', 'error');
 }
 </script>

@@ -29,8 +29,7 @@ if ($action === 'crear') {
     if (!strtotime($fecha)) { echo json_encode(['ok'=>false,'msg'=>'Fecha inválida']); exit; }
 
     // Verificar que la categoría pertenece al cobro
-    $chkCat = $db->prepare("SELECT id FROM categorias_gasto WHERE id=? AND cobro_id=? AND activa=1");
-    $chkCat->execute([$categoria_id, $cobro]);
+    $stmtCats = $db->query("SELECT * FROM categorias_gasto ORDER BY nombre");
     if (!$chkCat->fetch()) {
         echo json_encode(['ok'=>false,'msg'=>'Categoría no encontrada']); exit;
     }
@@ -91,14 +90,13 @@ if ($action === 'crear') {
     if (!$nombre) { echo json_encode(['ok'=>false,'msg'=>'El nombre es obligatorio']); exit; }
 
     // Verificar que no exista ya
-    $chk = $db->prepare("SELECT id FROM categorias_gasto WHERE cobro_id=? AND nombre=?");
-    $chk->execute([$cobro, $nombre]);
+    $chk = $db->prepare("SELECT id FROM categorias_gasto WHERE nombre=?");
+    $chk->execute([$nombre]);
     if ($chk->fetch()) {
         echo json_encode(['ok'=>false,'msg'=>'Ya existe una categoría con ese nombre']); exit;
     }
-
-    $db->prepare("INSERT INTO categorias_gasto (cobro_id, nombre) VALUES (?,?)")
-       ->execute([$cobro, $nombre]);
+    $db->prepare("INSERT INTO categorias_gasto (cobro_id, nombre) VALUES (1,?)")
+    ->execute([$nombre]);
 
     echo json_encode(['ok'=>true,'msg'=>'Categoría creada correctamente']);
 
@@ -114,8 +112,8 @@ if ($action === 'crear') {
     $activa = (int)($data['activa'] ?? 0);
     if (!$id) { echo json_encode(['ok'=>false,'msg'=>'ID inválido']); exit; }
 
-    $chk = $db->prepare("SELECT id FROM categorias_gasto WHERE id=? AND cobro_id=?");
-    $chk->execute([$id, $cobro]);
+    $chk = $db->prepare("SELECT id FROM categorias_gasto WHERE id=?");
+    $chk->execute([$id]);
     if (!$chk->fetch()) {
         echo json_encode(['ok'=>false,'msg'=>'Categoría no encontrada']); exit;
     }

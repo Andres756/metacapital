@@ -7,62 +7,98 @@ $db    = getDB();
 $cobro = cobroActivo();
 $id    = (int)($_GET['id'] ?? 0);
 
-// Cargar deudor
-$stmt = $db->prepare("SELECT * FROM deudores WHERE id = ?");
+$stmt = $db->prepare("SELECT * FROM deudores WHERE id=?");
 $stmt->execute([$id]);
 $deudor = $stmt->fetch();
 if (!$deudor) { header('Location: /pages/deudores.php'); exit; }
 
-// Préstamos del deudor
+// Cobros donde está este deudor
+$stmtCobrosD = $db->prepare("
+    SELECT c.id, c.nombre FROM cobros c
+    JOIN deudor_cobro dc ON dc.cobro_id=c.id
+    WHERE dc.deudor_id=? AND c.activo=1
+    ORDER BY c.nombre
+");
+$stmtCobrosD->execute([$id]);
+$cobrosDelDeudor = $stmtCobrosD->fetchAll();
+$cobrosIds = array_column($cobrosDelDeudor, 'id');
+
+// Filtro de cobro (para admin que quiere ver solo uno)
+$filtroCobro = (int)($_GET['cobro'] ?? 0);
+$cobrosParaQuery = ($filtroCobro > 0 && in_array($filtroCobro, $cobrosIds))
+    ? [$filtroCobro]
+    : $cobrosIds;
+
+$cobroIn = implode(',', array_map('intval', $cobrosParaQuery ?: [0]));
+
+// Préstamos — TODOS los cobros del deudor (sin filtrar por cobro activo)
 $stmtP = $db->prepare("
     SELECT p.*,
+        co.nombre AS cobro_nombre,
         cap.nombre AS capitalista_nombre,
-        c.nombre   AS cuenta_nombre,
         (SELECT COUNT(*) FROM cuotas WHERE prestamo_id=p.id AND estado='pagado') AS cuotas_pagadas,
-        (SELECT COUNT(*) FROM cuotas WHERE prestamo_id=p.id) AS cuotas_total,
-        padre.id   AS padre_id
+        (SELECT COUNT(*) FROM cuotas WHERE prestamo_id=p.id) AS cuotas_total
     FROM prestamos p
-    LEFT JOIN capitalistas cap ON cap.id = p.capitalista_id
-    LEFT JOIN cuentas c        ON c.id   = p.cuenta_desembolso_id
-    LEFT JOIN prestamos padre  ON padre.id = p.prestamo_padre_id
-    WHERE p.deudor_id = ? AND p.cobro_id = ?
+    JOIN cobros co ON co.id=p.cobro_id
+    LEFT JOIN capitalistas cap ON cap.id=p.capitalista_id
+    WHERE p.deudor_id=? AND p.cobro_id IN ($cobroIn)
     ORDER BY p.created_at DESC
 ");
-$stmtP->execute([$id, $cobro]);
+$stmtP->execute([$id]);
 $prestamos = $stmtP->fetchAll();
 
-// Pagos del deudor
+// Pagos — todos los cobros
 $stmtPag = $db->prepare("
-    SELECT pg.*, cu.numero_cuota, c.nombre AS cuenta
+    SELECT pg.*, cu.numero_cuota, co.nombre AS cobro_nombre
     FROM pagos pg
-    JOIN cuotas cu ON cu.id = pg.cuota_id
-    LEFT JOIN cuentas c ON c.id = pg.cuenta_id
-    WHERE pg.deudor_id = ? AND pg.cobro_id = ?
+    JOIN cuotas cu ON cu.id=pg.cuota_id
+    JOIN cobros co ON co.id=pg.cobro_id
+    WHERE pg.deudor_id=? AND pg.cobro_id IN ($cobroIn)
+      AND (pg.anulado=0 OR pg.anulado IS NULL)
     ORDER BY pg.fecha_pago DESC
-    LIMIT 30
+    LIMIT 50
 ");
-$stmtPag->execute([$id, $cobro]);
+$stmtPag->execute([$id]);
 $pagos = $stmtPag->fetchAll();
 
-// Gestiones
+// Gestiones — todos los cobros
 $stmtG = $db->prepare("
-    SELECT gc.*, u.nombre AS usuario_nombre
+    SELECT gc.*, u.nombre AS usuario_nombre, co.nombre AS cobro_nombre
     FROM gestiones_cobro gc
-    LEFT JOIN usuarios u ON u.id = gc.usuario_id
-    WHERE gc.deudor_id = ? AND gc.cobro_id = ?
+    LEFT JOIN usuarios u ON u.id=gc.usuario_id
+    LEFT JOIN cobros co  ON co.id=gc.cobro_id
+    WHERE gc.deudor_id=? AND gc.cobro_id IN ($cobroIn)
     ORDER BY gc.fecha_gestion DESC
-    LIMIT 20
+    LIMIT 30
 ");
-$stmtG->execute([$id, $cobro]);
+$stmtG->execute([$id]);
 $gestiones = $stmtG->fetchAll();
 
-// Totales resumen
-$saldoTotal   = array_sum(array_column(array_filter($prestamos, fn($p) => !in_array($p['estado'],['pagado','renovado','refinanciado'])), 'saldo_pendiente'));
-$totalPrestado= array_sum(array_column($prestamos, 'monto_prestado'));
-$totalPagado  = array_sum(array_column($pagos, 'monto_pagado'));
+// Totales
+$saldoTotal    = array_sum(array_column(
+    array_filter($prestamos, fn($p) => !in_array($p['estado'],['pagado','renovado','refinanciado','anulado','incobrable'])),
+    'saldo_pendiente'
+));
+$totalPrestado = array_sum(array_column($prestamos, 'monto_prestado'));
+$totalPagado   = array_sum(array_column($pagos, 'monto_pagado'));
+$prestamosActivos = array_filter($prestamos, fn($p) => in_array($p['estado'],['activo','en_mora','en_acuerdo']));
+
+// Lista de cobros disponibles para el usuario (para filtro)
+if ($_SESSION['rol'] === 'superadmin') {
+    $todosCobros = $cobrosDelDeudor;
+} else {
+    $stmtMisCobros = $db->prepare("
+        SELECT c.id, c.nombre FROM cobros c
+        JOIN usuario_cobro uc ON uc.cobro_id=c.id
+        WHERE uc.usuario_id=? AND c.activo=1 AND c.id IN ($cobroIn)
+        ORDER BY c.nombre
+    ");
+    $stmtMisCobros->execute([$_SESSION['usuario_id']]);
+    $todosCobros = $stmtMisCobros->fetchAll();
+}
 
 $pageTitle   = $deudor['nombre'];
-$pageSection = 'Deudores / ' . $deudor['nombre'];
+$pageSection = 'Deudores';
 require_once __DIR__ . '/../includes/header.php';
 ?>
 
@@ -72,10 +108,12 @@ require_once __DIR__ . '/../includes/header.php';
   <span class="current"><?= htmlspecialchars($deudor['nombre']) ?></span>
 </div>
 
-<!-- Header deudor -->
 <div class="page-header page-header-row">
   <div style="display:flex;align-items:center;gap:1rem">
-    <div class="avatar avatar-lg"><?= strtoupper(substr($deudor['nombre'],0,1)) ?></div>
+    <div class="avatar avatar-lg"
+         style="<?= $deudor['comportamiento']==='clavo' ? 'background:#ef4444' : '' ?>">
+      <?= strtoupper(substr($deudor['nombre'],0,1)) ?>
+    </div>
     <div>
       <h1><?= htmlspecialchars(strtoupper($deudor['nombre'])) ?></h1>
       <div style="display:flex;gap:0.75rem;margin-top:0.35rem;flex-wrap:wrap">
@@ -90,21 +128,48 @@ require_once __DIR__ . '/../includes/header.php';
         <?php endif; ?>
         <?php
           $comp = $deudor['comportamiento'];
-          $cc = $comp==='bueno'?'badge-green':($comp==='regular'?'badge-orange':'badge-red');
+          $cc = match($comp) { 'bueno'=>'badge-green','regular'=>'badge-orange','clavo'=>'badge-red',default=>'badge-muted' };
         ?>
         <span class="badge <?= $cc ?>"><?= ucfirst($comp) ?></span>
+        <!-- Cobros donde aparece -->
+        <?php foreach ($cobrosDelDeudor as $cb): ?>
+        <span class="badge badge-muted" style="font-size:0.6rem"><?= htmlspecialchars($cb['nombre']) ?></span>
+        <?php endforeach; ?>
       </div>
     </div>
   </div>
-  <div class="btn-group">
-    <?php if (canDo('puede_crear_prestamo')): ?>
+  <div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap">
+    <!-- Filtro por cobro si tiene más de uno -->
+    <?php if (count($cobrosDelDeudor) > 1): ?>
+    <form method="GET" style="display:flex;gap:0.5rem;align-items:center">
+      <input type="hidden" name="id" value="<?= $id ?>">
+      <select name="cobro" onchange="this.form.submit()"
+              style="font-size:0.78rem;padding:0.4rem 0.6rem;border:1px solid var(--border);border-radius:var(--radius);background:var(--card);color:var(--text)">
+        <option value="0">Todos los cobros</option>
+        <?php foreach ($cobrosDelDeudor as $cb): ?>
+        <option value="<?= $cb['id'] ?>" <?= $filtroCobro===$cb['id']?'selected':'' ?>>
+          <?= htmlspecialchars($cb['nombre']) ?>
+        </option>
+        <?php endforeach; ?>
+      </select>
+    </form>
+    <?php endif; ?>
+
+    <?php if (canDo('puede_crear_prestamo') && $deudor['comportamiento'] !== 'clavo'): ?>
     <a href="/pages/prestamos.php?action=nuevo&deudor=<?= $id ?>" class="btn btn-primary">+ Nuevo Préstamo</a>
     <?php endif; ?>
-    <?php if (canDo('puede_editar_prestamo')): ?>
+    <?php if (canDo('puede_editar_deudor')): ?>
     <button class="btn btn-ghost" onclick="openModal('modal-editar')">Editar</button>
     <?php endif; ?>
   </div>
 </div>
+
+<?php if ($deudor['comportamiento'] === 'clavo'): ?>
+<div class="alert alert-danger" style="margin-bottom:1rem">
+  🔴 <strong>CLAVO</strong> — Este deudor no puede recibir nuevos préstamos.
+  <?= $deudor['notas'] ? htmlspecialchars($deudor['notas']) : '' ?>
+</div>
+<?php endif; ?>
 
 <!-- Stats -->
 <div class="stats-grid" style="grid-template-columns:repeat(4,1fr);margin-bottom:1.5rem">
@@ -123,7 +188,7 @@ require_once __DIR__ . '/../includes/header.php';
   </div>
   <div class="stat-card blue">
     <div class="stat-label">Préstamos Activos</div>
-    <div class="stat-value"><?= count(array_filter($prestamos, fn($p)=>in_array($p['estado'],['activo','en_mora','en_acuerdo']))) ?></div>
+    <div class="stat-value"><?= count($prestamosActivos) ?></div>
   </div>
 </div>
 
@@ -131,35 +196,40 @@ require_once __DIR__ . '/../includes/header.php';
 
   <!-- PRÉSTAMOS -->
   <div>
-    <div class="card">
+    <div class="card mb-2">
       <div class="card-header">
         <span class="card-title">PRÉSTAMOS</span>
+        <span class="text-mono text-xs text-muted"><?= count($prestamos) ?> registros</span>
       </div>
       <?php if (empty($prestamos)): ?>
         <div class="empty-state"><span class="empty-icon">◎</span><p>Sin préstamos registrados</p></div>
       <?php else: ?>
-      <?php foreach ($prestamos as $p): ?>
-      <?php
+      <?php foreach ($prestamos as $p):
         $estadoClass = match($p['estado']) {
-          'activo'        => 'badge-purple',
-          'en_mora'       => 'badge-orange',
-          'en_acuerdo'    => 'badge-blue',
-          'pagado'        => 'badge-green',
-          'renovado'      => 'badge-muted',
-          'refinanciado'  => 'badge-muted',
-          'incobrable'    => 'badge-red',
-          default         => 'badge-muted'
+          'activo'       => 'badge-purple',
+          'en_mora'      => 'badge-orange',
+          'en_acuerdo'   => 'badge-blue',
+          'pagado'       => 'badge-green',
+          'renovado','refinanciado' => 'badge-muted',
+          'incobrable'   => 'badge-red',
+          default        => 'badge-muted'
         };
         $pct = $p['cuotas_total'] > 0 ? round($p['cuotas_pagadas']/$p['cuotas_total']*100) : 0;
       ?>
       <div style="padding:1rem 1.25rem;border-bottom:1px solid var(--border)">
         <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:0.75rem">
           <div>
-            <div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.25rem">
+            <div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.25rem;flex-wrap:wrap">
               <span class="text-mono text-xs text-muted">#<?= $p['id'] ?></span>
               <span class="badge <?= $estadoClass ?>"><?= strtoupper($p['estado']) ?></span>
               <?php if ($p['tipo_origen'] !== 'nuevo'): ?>
               <span class="badge badge-muted"><?= strtoupper($p['tipo_origen']) ?></span>
+              <?php endif; ?>
+              <!-- Cobro al que pertenece -->
+              <?php if (count($cobrosDelDeudor) > 1 || !$filtroCobro): ?>
+              <span class="badge badge-muted" style="font-size:0.6rem;background:rgba(124,106,255,.15)">
+                <?= htmlspecialchars($p['cobro_nombre']) ?>
+              </span>
               <?php endif; ?>
             </div>
             <div style="font-family:var(--font-display);font-size:1.4rem;letter-spacing:1px;color:var(--accent)">
@@ -169,7 +239,7 @@ require_once __DIR__ . '/../includes/header.php';
             <div class="text-mono text-xs text-muted mt-1">
               <?= $p['interes_valor'] ?><?= $p['tipo_interes']==='porcentaje'?'%':' fijo' ?> ·
               <?= ucfirst($p['frecuencia_pago']) ?> · <?= $p['num_cuotas'] ?> cuotas de <?= fmt($p['valor_cuota']) ?> ·
-              Inicio: <?= date('d M Y', strtotime($p['fecha_inicio'])) ?>
+              <?= date('d M Y', strtotime($p['fecha_inicio'])) ?>
             </div>
           </div>
           <div style="text-align:right">
@@ -178,7 +248,6 @@ require_once __DIR__ . '/../includes/header.php';
           </div>
         </div>
 
-        <!-- Progress cuotas -->
         <div style="display:flex;align-items:center;gap:0.75rem;margin-bottom:0.75rem">
           <div class="progress" style="flex:1">
             <div class="progress-bar <?= $p['estado']==='en_mora'?'orange':'' ?>" style="width:<?= $pct ?>%"></div>
@@ -186,20 +255,20 @@ require_once __DIR__ . '/../includes/header.php';
           <span class="text-mono text-xs text-muted"><?= $p['cuotas_pagadas'] ?>/<?= $p['cuotas_total'] ?> cuotas</span>
         </div>
 
-        <!-- Acciones según estado -->
         <div class="btn-group">
           <a href="/pages/prestamo_detalle.php?id=<?= $p['id'] ?>" class="btn btn-info btn-sm">Ver cuotas</a>
           <?php if (canDo('puede_registrar_pago') && in_array($p['estado'],['activo','en_mora','en_acuerdo'])): ?>
           <a href="/pages/pagos.php?prestamo=<?= $p['id'] ?>" class="btn btn-success btn-sm">💰 Pagar</a>
           <?php endif; ?>
           <?php if (canDo('puede_editar_prestamo') && in_array($p['estado'],['activo','en_mora','en_acuerdo'])): ?>
-          <a href="/pages/prestamos.php?action=gestionar&id=<?= $p['id'] ?>" class="btn btn-warning btn-sm">Gestionar</a>
+          <a href="/pages/prestamo_detalle.php?id=<?= $p['id'] ?>" class="btn btn-warning btn-sm">Gestionar</a>
           <?php endif; ?>
         </div>
 
         <?php if ($p['nota_acuerdo']): ?>
         <div class="alert alert-info mt-1" style="margin-bottom:0;padding:0.5rem 0.75rem;font-size:0.7rem">
-          📋 <?= htmlspecialchars($p['nota_acuerdo']) ?> — Compromiso: <?= $p['fecha_compromiso'] ?>
+          📋 <?= htmlspecialchars($p['nota_acuerdo']) ?>
+          <?= $p['fecha_compromiso'] ? ' — Compromiso: '.$p['fecha_compromiso'] : '' ?>
         </div>
         <?php endif; ?>
       </div>
@@ -219,7 +288,13 @@ require_once __DIR__ . '/../includes/header.php';
       <div class="table-wrap">
         <table>
           <thead>
-            <tr><th>Fecha</th><th>Cuota</th><th>Monto</th><th>Cuenta</th><th>Método</th></tr>
+            <tr>
+              <th>Fecha</th>
+              <th>Cuota</th>
+              <th>Monto</th>
+              <th>Método</th>
+              <?php if (count($cobrosDelDeudor) > 1): ?><th>Cobro</th><?php endif; ?>
+            </tr>
           </thead>
           <tbody>
             <?php foreach ($pagos as $pg): ?>
@@ -227,8 +302,10 @@ require_once __DIR__ . '/../includes/header.php';
               <td class="text-mono"><?= date('d M Y', strtotime($pg['fecha_pago'])) ?></td>
               <td class="text-muted">#<?= $pg['numero_cuota'] ?></td>
               <td class="green text-mono fw-600"><?= fmt($pg['monto_pagado']) ?></td>
-              <td><?= htmlspecialchars($pg['cuenta'] ?? 'Efectivo') ?></td>
               <td><span class="badge badge-muted"><?= ucfirst($pg['metodo_pago']) ?></span></td>
+              <?php if (count($cobrosDelDeudor) > 1): ?>
+              <td class="text-xs text-muted"><?= htmlspecialchars($pg['cobro_nombre']) ?></td>
+              <?php endif; ?>
             </tr>
             <?php endforeach; ?>
           </tbody>
@@ -240,27 +317,25 @@ require_once __DIR__ . '/../includes/header.php';
 
   <!-- PANEL LATERAL -->
   <div>
-    <!-- Datos personales -->
     <div class="card mb-2">
       <div class="card-header"><span class="card-title">DATOS</span></div>
       <div class="card-body">
         <?php
-          $campos = [
-            'Teléfono' => $deudor['telefono'],
-            'Tel. Alt'  => $deudor['telefono_alt'],
-            'Documento' => $deudor['documento'],
-            'Dirección' => $deudor['direccion'],
-            'Barrio'    => $deudor['barrio'],
-          ];
-          foreach ($campos as $label => $val):
-            if (!$val) continue;
+        $campos = [
+          'Teléfono'  => $deudor['telefono'],
+          'Tel. Alt'  => $deudor['telefono_alt'],
+          'Documento' => $deudor['documento'],
+          'Dirección' => $deudor['direccion'],
+          'Barrio'    => $deudor['barrio'],
+        ];
+        foreach ($campos as $label => $val):
+          if (!$val) continue;
         ?>
         <div style="display:flex;justify-content:space-between;padding:0.4rem 0;border-bottom:1px solid var(--border);font-family:var(--font-mono);font-size:0.72rem">
           <span style="color:var(--muted)"><?= $label ?></span>
           <span><?= htmlspecialchars($val) ?></span>
         </div>
         <?php endforeach; ?>
-
         <?php if ($deudor['codeudor_nombre']): ?>
         <div class="divider"></div>
         <div class="text-mono text-xs text-muted mb-1" style="text-transform:uppercase;letter-spacing:1px">Codeudor</div>
@@ -269,17 +344,15 @@ require_once __DIR__ . '/../includes/header.php';
         <div class="text-mono text-xs text-muted"><?= htmlspecialchars($deudor['codeudor_telefono']) ?></div>
         <?php endif; ?>
         <?php endif; ?>
-
         <?php if ($deudor['garantia_descripcion']): ?>
         <div class="divider"></div>
         <div class="text-mono text-xs text-muted mb-1" style="text-transform:uppercase;letter-spacing:1px">Garantía</div>
         <div style="font-size:0.8rem"><?= htmlspecialchars($deudor['garantia_descripcion']) ?></div>
         <?php endif; ?>
-
         <?php if ($deudor['notas']): ?>
         <div class="divider"></div>
         <div class="text-mono text-xs text-muted mb-1" style="text-transform:uppercase;letter-spacing:1px">Notas</div>
-        <div style="font-size:0.78rem;line-height:1.5;color:var(--text-soft)"><?= nl2br(htmlspecialchars($deudor['notas'])) ?></div>
+        <div style="font-size:0.78rem;line-height:1.5"><?= nl2br(htmlspecialchars($deudor['notas'])) ?></div>
         <?php endif; ?>
       </div>
     </div>
@@ -298,7 +371,7 @@ require_once __DIR__ . '/../includes/header.php';
         <div style="padding:0.65rem 1rem;border-bottom:1px solid rgba(37,37,53,0.5)">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.25rem">
             <span class="badge badge-muted"><?= ucfirst($g['tipo']) ?></span>
-            <span class="text-mono text-xs text-muted"><?= date('d M', strtotime($g['fecha_gestion'])) ?></span>
+            <span class="text-mono text-xs text-muted"><?= date('d M Y', strtotime($g['fecha_gestion'])) ?></span>
           </div>
           <div style="font-size:0.78rem;color:var(--text-soft)"><?= htmlspecialchars($g['nota']) ?></div>
           <?php if ($g['resultado']): ?>
@@ -320,7 +393,7 @@ require_once __DIR__ . '/../includes/header.php';
       <button class="modal-close" onclick="closeModal('modal-gestion')">✕</button>
     </div>
     <div class="modal-body">
-      <form id="form-gestion" onsubmit="guardarGestion(event)">
+      <form id="form-gestion">
         <input type="hidden" name="deudor_id" value="<?= $id ?>">
         <input type="hidden" name="action" value="gestion">
         <div class="form-grid mb-2">
@@ -357,12 +430,11 @@ require_once __DIR__ . '/../includes/header.php';
     </div>
     <div class="modal-footer">
       <button class="btn btn-ghost" onclick="closeModal('modal-gestion')">Cancelar</button>
-      <button class="btn btn-primary" onclick="guardarGestion(event)">GUARDAR</button>
+      <button class="btn btn-primary" onclick="guardarGestion()">GUARDAR</button>
     </div>
   </div>
 </div>
 
-<!-- Modal editar deudor (reutiliza datos) -->
 <!-- Modal editar deudor -->
 <div class="modal-overlay" id="modal-editar">
   <div class="modal" style="max-width:640px">
@@ -371,7 +443,7 @@ require_once __DIR__ . '/../includes/header.php';
       <button class="modal-close" onclick="closeModal('modal-editar')">✕</button>
     </div>
     <div class="modal-body">
-      <form id="form-editar" onsubmit="guardarEdicion(event)">
+      <form id="form-editar">
         <input type="hidden" name="id" value="<?= $id ?>">
         <div class="form-grid mb-2">
           <div class="field field-span2">
@@ -394,26 +466,24 @@ require_once __DIR__ . '/../includes/header.php';
             <label>Barrio</label>
             <input type="text" name="barrio" value="<?= htmlspecialchars($deudor['barrio']??'') ?>">
           </div>
-
           <div class="field field-span2">
             <label>Dirección</label>
             <input type="text" id="det_direccion" name="direccion"
                    value="<?= htmlspecialchars($deudor['direccion']??'') ?>"
-                   placeholder="Escribe la dirección para buscar..."
-                   autocomplete="off">
+                   placeholder="Escribe la dirección..." autocomplete="off">
             <input type="hidden" id="det_lat"      name="lat"      value="<?= htmlspecialchars($deudor['lat']??'') ?>">
             <input type="hidden" id="det_lng"      name="lng"      value="<?= htmlspecialchars($deudor['lng']??'') ?>">
             <input type="hidden" id="det_place_id" name="place_id" value="<?= htmlspecialchars($deudor['place_id']??'') ?>">
           </div>
         </div>
 
-        <!-- Mapa fuera del form-grid -->
-        <div id="mapa-det-wrap" style="display:<?= ($deudor['lat'] && $deudor['lng']) ? 'block' : 'none' ?>;margin-bottom:1rem">
+        <div id="mapa-det-wrap"
+             style="display:<?= ($deudor['lat'] && $deudor['lng']) ? 'block' : 'none' ?>;margin-bottom:1rem">
           <div id="mapa-detalle"
-               style="width:100%;height:240px;border-radius:var(--radius);border:1px solid var(--border);overflow:hidden;min-height:240px">
+               style="width:100%;height:240px;border-radius:var(--radius);border:1px solid var(--border);overflow:hidden">
           </div>
           <div style="font-size:0.72rem;color:var(--muted);margin-top:0.4rem;font-family:var(--font-mono)">
-            📍 Arrastra el pin si la ubicación no es exacta
+            📍 Arrastra el pin para ajustar
           </div>
         </div>
 
@@ -421,9 +491,9 @@ require_once __DIR__ . '/../includes/header.php';
           <div class="field">
             <label>Comportamiento</label>
             <select name="comportamiento">
-              <option value="bueno"   <?= $deudor['comportamiento']==='bueno'   ?'selected':'' ?>>Bueno</option>
-              <option value="regular" <?= $deudor['comportamiento']==='regular' ?'selected':'' ?>>Regular</option>
-              <option value="clavo" <?= $deudor['comportamiento']==='clavo' ?'selected':'' ?>>Clavo</option>
+              <option value="bueno"   <?= $deudor['comportamiento']==='bueno'  ?'selected':'' ?>>✅ Bueno</option>
+              <option value="regular" <?= $deudor['comportamiento']==='regular'?'selected':'' ?>>⚠ Regular</option>
+              <option value="clavo"   <?= $deudor['comportamiento']==='clavo'  ?'selected':'' ?>>🔴 Clavo</option>
             </select>
           </div>
           <div class="field field-span2">
@@ -435,7 +505,7 @@ require_once __DIR__ . '/../includes/header.php';
     </div>
     <div class="modal-footer">
       <button class="btn btn-ghost" onclick="closeModal('modal-editar')">Cancelar</button>
-      <button class="btn btn-primary" onclick="guardarEdicion(event)">GUARDAR CAMBIOS</button>
+      <button class="btn btn-primary" onclick="guardarEdicion()">GUARDAR CAMBIOS</button>
     </div>
   </div>
 </div>
@@ -443,85 +513,7 @@ require_once __DIR__ . '/../includes/header.php';
 <?php
 $extraScript = <<<JS
 <script>
-// ── Mapa del detalle del deudor ───────────────────────────────
-let mapaDetInstance   = null;
-let markerDetInstance = null;
-let autocompleteDetInstance = null;
-
-function initMapaDetalle() {
-    if (mapaDetInstance) return;
-
-    const lat = parseFloat(document.getElementById('det_lat').value) || 5.5353;
-    const lng = parseFloat(document.getElementById('det_lng').value) || -73.3678;
-    const centro = { lat, lng };
-
-    mapaDetInstance = new google.maps.Map(document.getElementById('mapa-detalle'), {
-        center            : centro,
-        zoom              : lat === 5.5353 ? 6 : 17,
-        mapTypeControl    : false,
-        streetViewControl : false,
-        fullscreenControl : false,
-    });
-
-    markerDetInstance = new google.maps.Marker({
-        position : centro,
-        map      : mapaDetInstance,
-        draggable: true,
-        title    : 'Arrastra para ajustar la ubicación',
-    });
-
-    markerDetInstance.addListener('dragend', function () {
-        const pos = markerDetInstance.getPosition();
-        document.getElementById('det_lat').value      = pos.lat().toFixed(7);
-        document.getElementById('det_lng').value      = pos.lng().toFixed(7);
-        document.getElementById('det_place_id').value = '';
-    });
-
-    autocompleteDetInstance = new google.maps.places.Autocomplete(
-        document.getElementById('det_direccion'),
-        {
-            componentRestrictions: { country: 'co' },
-            fields: ['geometry', 'formatted_address', 'place_id'],
-        }
-    );
-
-    autocompleteDetInstance.addListener('place_changed', function () {
-        const place = autocompleteDetInstance.getPlace();
-        if (!place.geometry || !place.geometry.location) return;
-
-        const lat = place.geometry.location.lat();
-        const lng = place.geometry.location.lng();
-
-        document.getElementById('det_lat').value      = lat.toFixed(7);
-        document.getElementById('det_lng').value      = lng.toFixed(7);
-        document.getElementById('det_place_id').value = place.place_id || '';
-
-        const pos = new google.maps.LatLng(lat, lng);
-        mapaDetInstance.setCenter(pos);
-        mapaDetInstance.setZoom(17);
-        markerDetInstance.setPosition(pos);
-
-        document.getElementById('mapa-det-wrap').style.display = 'block';
-        setTimeout(() => google.maps.event.trigger(mapaDetInstance, 'resize'), 100);
-    });
-}
-
-// Inicializar mapa cuando se abre el modal editar
-document.querySelector('[onclick="openModal(\'modal-editar\')"]')
-    ?.addEventListener('click', () => {
-        setTimeout(() => {
-            if (typeof google === 'undefined') return;
-            document.getElementById('mapa-det-wrap').style.display = 'block';
-            if (!mapaDetInstance) {
-                initMapaDetalle();
-            } else {
-                google.maps.event.trigger(mapaDetInstance, 'resize');
-            }
-        }, 300);
-    });
-
-async function guardarGestion(e) {
-    e.preventDefault();
+async function guardarGestion() {
     const data = Object.fromEntries(new FormData(document.getElementById('form-gestion')));
     if (!data.nota?.trim()) { toast('La nota es obligatoria', 'error'); return; }
     const res = await apiPost('/api/deudores.php', data);
@@ -529,13 +521,58 @@ async function guardarGestion(e) {
     else toast(res.msg || 'Error', 'error');
 }
 
-async function guardarEdicion(e) {
-    e.preventDefault();
+async function guardarEdicion() {
     const data = Object.fromEntries(new FormData(document.getElementById('form-editar')));
-    const res = await apiPost('/api/deudores.php', data);
+    const res  = await apiPost('/api/deudores.php', data);
     if (res.ok) { toast('Deudor actualizado'); closeModal('modal-editar'); setTimeout(()=>location.reload(),800); }
     else toast(res.msg || 'Error', 'error');
 }
+
+// ── Mapa modal editar ─────────────────────────────────────────
+let mapaDetInstance = null, markerDetInstance = null, autoDetInstance = null;
+
+function initMapaDetalle() {
+    if (mapaDetInstance) return;
+    const lat = parseFloat(document.getElementById('det_lat').value) || 5.5353;
+    const lng = parseFloat(document.getElementById('det_lng').value) || -73.3678;
+    mapaDetInstance = new google.maps.Map(document.getElementById('mapa-detalle'), {
+        center: {lat,lng}, zoom: lat===5.5353 ? 6 : 17,
+        mapTypeControl:false, streetViewControl:false, fullscreenControl:false,
+    });
+    markerDetInstance = new google.maps.Marker({ position:{lat,lng}, map:mapaDetInstance, draggable:true });
+    markerDetInstance.addListener('dragend', () => {
+        const pos = markerDetInstance.getPosition();
+        document.getElementById('det_lat').value      = pos.lat().toFixed(7);
+        document.getElementById('det_lng').value      = pos.lng().toFixed(7);
+        document.getElementById('det_place_id').value = '';
+    });
+    autoDetInstance = new google.maps.places.Autocomplete(
+        document.getElementById('det_direccion'),
+        { componentRestrictions:{country:'co'}, fields:['geometry','formatted_address','place_id'] }
+    );
+    autoDetInstance.addListener('place_changed', () => {
+        const place = autoDetInstance.getPlace();
+        if (!place.geometry?.location) return;
+        const lat = place.geometry.location.lat();
+        const lng = place.geometry.location.lng();
+        document.getElementById('det_lat').value      = lat.toFixed(7);
+        document.getElementById('det_lng').value      = lng.toFixed(7);
+        document.getElementById('det_place_id').value = place.place_id || '';
+        const pos = new google.maps.LatLng(lat, lng);
+        mapaDetInstance.setCenter(pos); mapaDetInstance.setZoom(17); markerDetInstance.setPosition(pos);
+        document.getElementById('mapa-det-wrap').style.display = 'block';
+        setTimeout(() => google.maps.event.trigger(mapaDetInstance, 'resize'), 100);
+    });
+}
+
+document.querySelector('[onclick="openModal(\'modal-editar\')"]')?.addEventListener('click', () => {
+    setTimeout(() => {
+        if (typeof google === 'undefined') return;
+        document.getElementById('mapa-det-wrap').style.display = 'block';
+        if (!mapaDetInstance) initMapaDetalle();
+        else google.maps.event.trigger(mapaDetInstance, 'resize');
+    }, 300);
+});
 </script>
 JS;
 require_once __DIR__ . '/../includes/footer.php';

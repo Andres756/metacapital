@@ -6,7 +6,7 @@ require_once __DIR__ . '/header.php';
 $db = getDB();
 
 // Categorías de gasto del cobro
-$stmtCat = $db->prepare("SELECT id, nombre FROM categorias_gasto WHERE cobro_id=? AND activa=1 ORDER BY nombre");
+$stmtCat = $db->query("SELECT id, nombre FROM categorias_gasto WHERE activa=1 ORDER BY nombre");
 $stmtCat->execute([$cobro]);
 $categorias = $stmtCat->fetchAll();
 

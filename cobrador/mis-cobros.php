@@ -25,16 +25,16 @@ $stmtPagos = $db->prepare("
 $stmtPagos->execute([$cobro, $hoy, $uid]);
 $pagos = $stmtPagos->fetchAll();
 
-// ── Préstamos creados hoy ────────────────────────────────────
+// ── Préstamos creados hoy — todos del cobro, sin filtrar por usuario ─
 $stmtPrest = $db->prepare("
     SELECT p.*, d.nombre AS deudor
     FROM prestamos p
     JOIN deudores d ON d.id = p.deudor_id
     WHERE p.cobro_id=? AND DATE(p.created_at)=?
-      AND p.usuario_id=? AND p.estado != 'anulado'
+      AND p.estado != 'anulado'
     ORDER BY p.created_at DESC
 ");
-$stmtPrest->execute([$cobro, $hoy, $uid]);
+$stmtPrest->execute([$cobro, $hoy]);
 $prestamosHoy = $stmtPrest->fetchAll();
 
 // ── Gastos del día ───────────────────────────────────────────
@@ -56,7 +56,6 @@ $totalGastos    = array_sum(array_column(
     'monto'
 ));
 
-// Al inicio del archivo, después de cargar gastos, agregar:
 $stmtLiq = $db->prepare("SELECT base_trabajado FROM liquidaciones WHERE cobro_id=? AND fecha=?");
 $stmtLiq->execute([$cobro, $hoy]);
 $liqHoy = $stmtLiq->fetch();
@@ -132,29 +131,14 @@ $efectivoEsperado = $base_trabajado !== null
 
 <!-- Tabs -->
 <div style="display:flex;gap:0.4rem;margin-bottom:1rem;overflow-x:auto;padding-bottom:2px">
-    <button onclick="showTab('pagos')"    id="tab-pagos"    class="tab-btn tab-active">💰 Pagos (<?= count($pagos) ?>)</button>
+    <button onclick="showTab('pagos')"     id="tab-pagos"     class="tab-btn tab-active">💰 Pagos (<?= count($pagos) ?>)</button>
     <button onclick="showTab('prestamos')" id="tab-prestamos" class="tab-btn">📋 Préstamos (<?= count($prestamosHoy) ?>)</button>
-    <button onclick="showTab('gastos')"   id="tab-gastos"   class="tab-btn">🧾 Gastos (<?= count($gastos) ?>)</button>
+    <button onclick="showTab('gastos')"    id="tab-gastos"    class="tab-btn">🧾 Gastos (<?= count($gastos) ?>)</button>
 </div>
 
 <style>
-.tab-btn {
-    padding: 0.5rem 0.85rem;
-    border-radius: var(--radius);
-    font-family: var(--font-mono);
-    font-size: 0.72rem;
-    font-weight: 600;
-    border: 1px solid var(--border);
-    background: var(--card);
-    color: var(--muted);
-    cursor: pointer;
-    white-space: nowrap;
-}
-.tab-btn.tab-active {
-    background: var(--accent);
-    color: #fff;
-    border-color: var(--accent);
-}
+.tab-btn { padding:0.5rem 0.85rem;border-radius:var(--radius);font-family:var(--font-mono);font-size:0.72rem;font-weight:600;border:1px solid var(--border);background:var(--card);color:var(--muted);cursor:pointer;white-space:nowrap; }
+.tab-btn.tab-active { background:var(--accent);color:#fff;border-color:var(--accent); }
 </style>
 
 <!-- Tab: Pagos -->
@@ -169,22 +153,14 @@ $efectivoEsperado = $base_trabajado !== null
 <div class="cob-card" style="margin-bottom:0.5rem">
     <div style="display:flex;justify-content:space-between;align-items:flex-start">
         <div style="flex:1;min-width:0">
-            <div style="font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">
-                <?= htmlspecialchars($pg['deudor']) ?>
-            </div>
+            <div style="font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis"><?= htmlspecialchars($pg['deudor']) ?></div>
             <div style="font-size:0.72rem;color:var(--muted);font-family:var(--font-mono);margin-top:2px">
-                Cuota #<?= $pg['numero_cuota'] ?> ·
-                <?= htmlspecialchars($pg['cuenta_nombre'] ?? 'Efectivo') ?> ·
-                <?= ucfirst($pg['metodo_pago'] ?? 'efectivo') ?>
+                Cuota #<?= $pg['numero_cuota'] ?> · <?= htmlspecialchars($pg['cuenta_nombre'] ?? 'Efectivo') ?> · <?= ucfirst($pg['metodo_pago'] ?? 'efectivo') ?>
             </div>
         </div>
         <div style="text-align:right;flex-shrink:0;margin-left:0.75rem">
-            <div style="font-size:1rem;font-weight:700;color:#22c55e">
-                <?= fmt($pg['monto_pagado']) ?>
-            </div>
-            <div style="font-size:0.65rem;color:var(--muted);font-family:var(--font-mono)">
-                <?= date('h:i a', strtotime($pg['created_at'])) ?>
-            </div>
+            <div style="font-size:1rem;font-weight:700;color:#22c55e"><?= fmt($pg['monto_pagado']) ?></div>
+            <div style="font-size:0.65rem;color:var(--muted);font-family:var(--font-mono)"><?= date('h:i a', strtotime($pg['created_at'])) ?></div>
         </div>
     </div>
 </div>
@@ -204,22 +180,14 @@ $efectivoEsperado = $base_trabajado !== null
 <div class="cob-card" style="margin-bottom:0.5rem;border-left:3px solid var(--accent);border-radius:0 var(--radius) var(--radius) 0">
     <div style="display:flex;justify-content:space-between;align-items:flex-start">
         <div style="flex:1;min-width:0">
-            <div style="font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">
-                <?= htmlspecialchars($p['deudor']) ?>
-            </div>
+            <div style="font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis"><?= htmlspecialchars($p['deudor']) ?></div>
             <div style="font-size:0.72rem;color:var(--muted);font-family:var(--font-mono);margin-top:2px">
-                <?= $p['num_cuotas'] ?> cuotas ·
-                <?= ucfirst($p['frecuencia_pago']) ?> ·
-                Cuota: <?= fmt($p['valor_cuota']) ?>
+                <?= $p['num_cuotas'] ?> cuotas · <?= ucfirst($p['frecuencia_pago']) ?> · Cuota: <?= fmt($p['valor_cuota']) ?>
             </div>
         </div>
         <div style="text-align:right;flex-shrink:0;margin-left:0.75rem">
-            <div style="font-size:1rem;font-weight:700;color:var(--accent)">
-                <?= fmt($p['monto_prestado']) ?>
-            </div>
-            <div style="font-size:0.65rem;color:var(--muted);font-family:var(--font-mono)">
-                <?= date('h:i a', strtotime($p['created_at'])) ?>
-            </div>
+            <div style="font-size:1rem;font-weight:700;color:var(--accent)"><?= fmt($p['monto_prestado']) ?></div>
+            <div style="font-size:0.65rem;color:var(--muted);font-family:var(--font-mono)"><?= date('h:i a', strtotime($p['created_at'])) ?></div>
         </div>
     </div>
 </div>
@@ -236,30 +204,18 @@ $efectivoEsperado = $base_trabajado !== null
 </div>
 <?php else: ?>
 <?php foreach ($gastos as $g):
-    $estadoColor = match($g['estado']) {
-        'aprobado'  => '#22c55e',
-        'rechazado' => '#ef4444',
-        default     => '#f59e0b'
-    };
+    $estadoColor = match($g['estado']) { 'aprobado' => '#22c55e', 'rechazado' => '#ef4444', default => '#f59e0b' };
 ?>
 <div class="cob-card" style="margin-bottom:0.5rem;border-left:3px solid <?= $estadoColor ?>;border-radius:0 var(--radius) var(--radius) 0">
     <div style="display:flex;justify-content:space-between;align-items:flex-start">
         <div style="flex:1;min-width:0">
             <div style="font-weight:600"><?= htmlspecialchars($g['descripcion']) ?></div>
-            <div style="font-size:0.72rem;color:var(--muted);font-family:var(--font-mono);margin-top:2px">
-                <?= htmlspecialchars($g['categoria_nombre'] ?? '—') ?>
-            </div>
+            <div style="font-size:0.72rem;color:var(--muted);font-family:var(--font-mono);margin-top:2px"><?= htmlspecialchars($g['categoria_nombre'] ?? '—') ?></div>
         </div>
         <div style="text-align:right;flex-shrink:0;margin-left:0.75rem">
-            <div style="font-size:1rem;font-weight:700;color:#f97316">
-                <?= fmt($g['monto']) ?>
-            </div>
+            <div style="font-size:1rem;font-weight:700;color:#f97316"><?= fmt($g['monto']) ?></div>
             <div style="font-size:0.65rem;font-family:var(--font-mono);color:<?= $estadoColor ?>">
-                <?= match($g['estado']) {
-                    'aprobado'  => '✓ Aprobado',
-                    'rechazado' => '✕ Rechazado',
-                    default     => '⏳ Pendiente'
-                } ?>
+                <?= match($g['estado']) { 'aprobado' => '✓ Aprobado', 'rechazado' => '✕ Rechazado', default => '⏳ Pendiente' } ?>
             </div>
         </div>
     </div>
@@ -272,12 +228,10 @@ $efectivoEsperado = $base_trabajado !== null
 $extraScript = <<<'JS'
 <script>
 function showTab(tab) {
-    // Ocultar todos los paneles
     ['pagos','prestamos','gastos'].forEach(t => {
         document.getElementById('panel-' + t).style.display = 'none';
         document.getElementById('tab-'   + t).classList.remove('tab-active');
     });
-    // Mostrar el seleccionado
     document.getElementById('panel-' + tab).style.display = 'block';
     document.getElementById('tab-'   + tab).classList.add('tab-active');
 }

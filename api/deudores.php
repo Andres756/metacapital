@@ -3,9 +3,37 @@ require_once __DIR__ . '/../config/auth.php';
 requireLogin();
 header('Content-Type: application/json');
 
+// GET — lista de deudores por cobro (para modal de préstamos)
+if ($_SERVER['REQUEST_METHOD'] === 'GET') {
+    $action  = $_GET['action'] ?? '';
+    $cobroId = (int)($_GET['cobro_id'] ?? 0);
+
+    if ($action === 'lista_cobro') {
+        if (!canDo('puede_ver_deudores')) {
+            echo json_encode(['ok'=>false,'msg'=>'Sin permiso']); exit;
+        }
+        if (!$cobroId) {
+            echo json_encode(['ok'=>false,'msg'=>'Falta cobro_id']); exit;
+        }
+        $stmt = $db->prepare("
+            SELECT d.id, d.nombre, d.documento, d.telefono
+            FROM deudores d
+            JOIN deudor_cobro dc ON dc.deudor_id=d.id
+            WHERE dc.cobro_id=? AND d.activo=1 AND d.comportamiento != 'clavo'
+            ORDER BY d.nombre ASC
+        ");
+        $stmt->execute([$cobroId]);
+        echo json_encode(['ok'=>true,'deudores'=>$stmt->fetchAll()]);
+        exit;
+    }
+
+    echo json_encode(['ok'=>false,'msg'=>'Acción no reconocida']); exit;
+}
+
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     echo json_encode(['ok'=>false,'msg'=>'Método no permitido']); exit;
 }
+
 
 $data  = json_decode(file_get_contents('php://input'), true) ?? [];
 $db    = getDB();
@@ -36,8 +64,8 @@ if ($action === 'guardar' || !isset($data['action'])) {
         ? $data['comportamiento'] : 'bueno';
 
     $campos = [
-        'nombre','telefono','telefono_alt','documento','direccion',
-        'lat','lng','place_id',  // ← agregar estos tres
+        'nombre','telefono','telefono_alt','ocupacion','documento','direccion',
+        'lat','lng','place_id',
         'barrio','codeudor_nombre','codeudor_telefono','codeudor_documento',
         'garantia_descripcion','notas'
     ];
@@ -234,6 +262,26 @@ if ($action === 'guardar' || !isset($data['action'])) {
 
     $db->prepare("DELETE FROM deudor_cobro WHERE deudor_id=? AND cobro_id=?")->execute([$deudor_id, $cobro_id]);
     echo json_encode(['ok'=>true,'msg'=>'Deudor desvinculado del cobro']);
+
+    } elseif ($action === 'lista_cobro') {
+    if (!canDo('puede_ver_deudores')) {
+        echo json_encode(['ok'=>false,'msg'=>'Sin permiso']); exit;
+    }
+ 
+    $cobro_id = (int)($data['cobro_id'] ?? 0);
+    if (!$cobro_id) {
+        echo json_encode(['ok'=>false,'msg'=>'Falta cobro_id']); exit;
+    }
+ 
+    $stmt = $db->prepare("
+        SELECT d.id, d.nombre, d.documento, d.telefono
+        FROM deudores d
+        JOIN deudor_cobro dc ON dc.deudor_id=d.id
+        WHERE dc.cobro_id=? AND d.activo=1 AND d.comportamiento != 'clavo'
+        ORDER BY d.nombre ASC
+    ");
+    $stmt->execute([$cobro_id]);
+    echo json_encode(['ok'=>true,'deudores'=>$stmt->fetchAll()]);
 
 } else {
     echo json_encode(['ok'=>false,'msg'=>'Acción no reconocida']);

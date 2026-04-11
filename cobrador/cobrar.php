@@ -179,6 +179,11 @@ if ($telLimpio && !str_starts_with($telLimpio, '57')) $telLimpio = '57' . $telLi
                 <div style="font-size:0.7rem;color:var(--muted);font-family:var(--font-mono);margin-top:2px">
                     CC: <?= htmlspecialchars($deudorPre['documento'] ?? '—') ?>
                     <?php if ($deudorPre['telefono']): ?> · <?= htmlspecialchars($deudorPre['telefono']) ?><?php endif; ?>
+                    <?php if ($deudorPre['ocupacion']): ?>
+                    <div style="margin-top:2px;color:var(--accent);font-weight:600">
+                        💼 <?= htmlspecialchars($deudorPre['ocupacion']) ?>
+                    </div>
+                    <?php endif; ?>
                 </div>
             </div>
             <a href="/cobrador/cobrar.php"
@@ -314,17 +319,21 @@ if ($telLimpio && !str_starts_with($telLimpio, '57')) $telLimpio = '57' . $telLi
             </div>
         </div>
 
-        <!-- Botones VER CUOTAS y RENOVAR -->
-        <div style="display:grid;grid-template-columns:1fr 1fr;border-top:1px solid var(--border)">
+        <!-- Botones VER CUOTAS | ABONAR | RENOVAR -->
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;border-top:1px solid var(--border)">
             <button onclick="toggleCuotas(<?= $prest['id'] ?>)"
                     id="btn-cuotas-<?= $prest['id'] ?>"
                     style="padding:0.75rem;background:transparent;border:none;border-right:1px solid var(--border);color:var(--accent);font-family:var(--font-mono);font-size:0.72rem;font-weight:700;cursor:pointer;letter-spacing:0.5px">
-                VER CUOTAS
+                🧾 VER CUOTAS
+            </button>
+            <button onclick="abonarPrestamo(<?= $prest['id'] ?>)"
+                    style="padding:0.75rem;background:transparent;border:none;border-right:1px solid var(--border);color:#22c55e;font-family:var(--font-mono);font-size:0.72rem;font-weight:700;cursor:pointer;letter-spacing:0.5px">
+                💰 ABONAR
             </button>
             <?php if ($deudorPre['comportamiento'] !== 'clavo'): ?>
             <a href="/cobrador/renovar.php?prestamo=<?= $prest['id'] ?>"
                style="display:flex;align-items:center;justify-content:center;padding:0.75rem;background:transparent;color:#f59e0b;font-family:var(--font-mono);font-size:0.72rem;font-weight:700;text-decoration:none;letter-spacing:0.5px">
-                RENOVAR
+                🔄 RENOVAR
             </a>
             <?php else: ?>
             <div style="display:flex;align-items:center;justify-content:center;padding:0.75rem;color:var(--muted);font-family:var(--font-mono);font-size:0.72rem;font-weight:700;opacity:0.4">
@@ -497,8 +506,26 @@ if ($telLimpio && !str_starts_with($telLimpio, '57')) $telLimpio = '57' . $telLi
 
 <?php
 $deudorId_js = (int)($deudorPre['id'] ?? 0);
+$cuotasData = [];
+foreach ($prestamos as $prest) {
+    foreach ($prest['cuotas'] as $c) {
+        if ($c['estado'] !== 'pagado') {
+            $cuotasData[$prest['id']] = [
+                'id'          => $c['id'],
+                'saldo'       => (float)$c['saldo_cuota'],
+                'numero'      => $c['numero_cuota'],
+                'vencimiento' => $c['fecha_vencimiento'],
+            ];
+            break;
+        }
+    }
+}
+error_log(print_r($cuotasData, true));
+$cuotasJson = json_encode($cuotasData);
+
 $extraScript = <<<JS
 <script>
+const CUOTAS_DATA = $cuotasJson;
 // ─── Filtro lista buscador ────────────────────────────────────
 let filtroActual = 'todos';
 
@@ -525,6 +552,17 @@ function aplicarFiltros(q) {
         item.style.display = (mb && mf) ? 'flex' : 'none';
     });
     document.getElementById('lista-busqueda').style.display = 'block';
+}
+
+function abonarPrestamo(prestId) {
+    const cuota = CUOTAS_DATA[prestId];
+    if (!cuota) {
+        alert('No hay cuotas pendientes en este préstamo');
+        return;
+    }
+    abrirPago(cuota.id, cuota.saldo, prestId);
+    document.getElementById('pago-label').textContent =
+        'Cuota #' + cuota.numero + ' · Vence: ' + cuota.vencimiento;
 }
 
 // ─── Toggle cuotas ────────────────────────────────────────────

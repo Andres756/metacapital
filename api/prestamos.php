@@ -11,7 +11,8 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
 
 $data  = json_decode(file_get_contents('php://input'), true) ?? [];
 $db    = getDB();
-$cobro = cobroActivo();
+// Si viene cobro_id en el request (admin con filtro) usarlo, si no usar sesión
+$cobro = (int)($data['cobro_id'] ?? 0) ?: cobroActivo();
 $action= $data['action'] ?? '';
 
 // ============================================================
@@ -76,6 +77,10 @@ if ($action === 'crear') {
 
     $db->beginTransaction();
     try {
+        // Vincular deudor al cobro automáticamente si no está vinculado
+        $db->prepare("INSERT IGNORE INTO deudor_cobro (deudor_id, cobro_id) VALUES (?,?)")
+           ->execute([$deudor_id, $cobro]);
+
         // Validar saldo de caja — solo base (origen capital/liquidacion)
         $saldo = getSaldoCaja($db, $cobro);
         if ($saldo < $monto) {
@@ -168,10 +173,22 @@ if ($action === 'crear') {
         echo json_encode(['ok'=>false,'msg'=>'Datos incompletos']); exit;
     }
 
-    $stmtP = $db->prepare("SELECT * FROM prestamos WHERE id=? AND cobro_id=?");
-    $stmtP->execute([$prestamo_id, $cobro]);
+    // Sin filtro cobro_id — admin puede pagar préstamos de cualquier cobro que tenga asignado
+    $stmtP = $db->prepare("SELECT * FROM prestamos WHERE id=?");
+    $stmtP->execute([$prestamo_id]);
     $prestamo = $stmtP->fetch();
     if (!$prestamo) { echo json_encode(['ok'=>false,'msg'=>'Préstamo no encontrado']); exit; }
+
+    // Verificar acceso al cobro del préstamo
+    if ($_SESSION['rol'] !== 'superadmin') {
+        $chkAcceso = $db->prepare("SELECT 1 FROM usuario_cobro WHERE usuario_id=? AND cobro_id=?");
+        $chkAcceso->execute([$_SESSION['usuario_id'], $prestamo['cobro_id']]);
+        if (!$chkAcceso->fetch()) {
+            echo json_encode(['ok'=>false,'msg'=>'Sin acceso a este préstamo']); exit;
+        }
+    }
+    // Usar el cobro_id del préstamo para todos los INSERTs
+    $cobro_pago = $prestamo['cobro_id'];
 
     $stmtC = $db->prepare("SELECT * FROM cuotas WHERE id=? AND prestamo_id=?");
     $stmtC->execute([$cuota_id, $prestamo_id]);
@@ -203,7 +220,7 @@ if ($action === 'crear') {
             (cobro_id,prestamo_id,cuota_id,deudor_id,monto_pagado,fecha_pago,metodo_pago,es_parcial,observacion,usuario_id)
             VALUES (?,?,?,?,?,?,?,?,?,?)")
         ->execute([
-            $cobro, $prestamo_id, $cuota_id, $prestamo['deudor_id'],
+            $cobro_pago, $prestamo_id, $cuota_id, $prestamo['deudor_id'],
             $monto_aplicar, $fecha_pago, $metodo_pago, 0,
             $data['observacion'] ?? null, $_SESSION['usuario_id']
         ]);
@@ -235,7 +252,7 @@ if ($action === 'crear') {
                     (cobro_id,prestamo_id,cuota_id,deudor_id,monto_pagado,fecha_pago,metodo_pago,es_parcial,observacion,usuario_id)
                     VALUES (?,?,?,?,?,?,?,?,?,?)")
                 ->execute([
-                    $cobro, $prestamo_id, $sc['id'], $prestamo['deudor_id'],
+                    $cobro_pago, $prestamo_id, $sc['id'], $prestamo['deudor_id'],
                     $aplicar, $fecha_pago, $metodo_pago,
                     $sc2 > 0 ? 1 : 0,
                     'Excedente de cuota #'.$cuota['numero_cuota'],
@@ -266,7 +283,7 @@ if ($action === 'crear') {
             (cobro_id, tipo, origen, es_entrada, monto, metodo_pago, capitalista_id, prestamo_id, pago_id, descripcion, fecha, usuario_id)
             VALUES (?, 'cobro_cuota', 'cobrador', 1, ?, ?, ?, ?, ?, ?, ?, ?)")
         ->execute([
-            $cobro, $monto, $metodo_pago,
+            $cobro_pago, $monto, $metodo_pago,
             ($prestamo['capitalista_id'] ?: null),
             $prestamo_id, $pago_id_principal,
             "Cobro cuota préstamo #$prestamo_id",

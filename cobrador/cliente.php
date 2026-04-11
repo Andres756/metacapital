@@ -17,10 +17,12 @@ $db = getDB();
         Paso 1 — Ingresa el número de documento
     </div>
     <div style="display:flex;gap:0.5rem">
-        <input type="text" id="input-documento"
+        <input type="tel" id="input-documento"
+               inputmode="numeric" pattern="[0-9]*"
                placeholder="Número de cédula"
                style="flex:1;padding:0.85rem;font-size:1.1rem;border-radius:var(--radius);border:1px solid var(--border);background:var(--card);color:var(--text)"
-               onkeydown="if(event.key==='Enter') buscarDocumento()">
+               onkeydown="if(event.key==='Enter') buscarDocumento()"
+               oninput="soloNumeros(this)">
         <button onclick="buscarDocumento()"
                 style="padding:0.85rem 1rem;background:var(--accent);color:#fff;border:none;border-radius:var(--radius);font-size:1.1rem;cursor:pointer;white-space:nowrap">
             🔍
@@ -41,20 +43,38 @@ $db = getDB();
 
         <div class="field-lg">
             <label>Documento *</label>
-            <input type="text" id="c_documento" placeholder="Número de cédula" required>
+            <input type="tel" id="c_documento"
+                   inputmode="numeric" pattern="[0-9]*"
+                   placeholder="Número de cédula (mín. 6 dígitos)"
+                   oninput="soloNumeros(this)" required>
+            <div id="err-documento" style="display:none;color:#ef4444;font-size:0.72rem;font-family:var(--font-mono);margin-top:3px"></div>
         </div>
+
         <div class="field-lg">
             <label>Nombre completo *</label>
             <input type="text" id="c_nombre" placeholder="Nombre del cliente" required>
         </div>
+
         <div class="field-lg">
-            <label>Teléfono *</label>
-            <input type="tel" id="c_telefono" placeholder="300 000 0000" required>
+            <label>Teléfono * <span style="color:var(--muted);font-weight:400;font-size:0.7rem">(exactamente 10 dígitos)</span></label>
+            <input type="tel" id="c_telefono"
+                   inputmode="numeric" pattern="[0-9]*"
+                   placeholder="3001234567"
+                   maxlength="10"
+                   oninput="soloNumeros(this); validarTelefono(this)" required>
+            <div id="err-telefono" style="display:none;color:#ef4444;font-size:0.72rem;font-family:var(--font-mono);margin-top:3px"></div>
         </div>
+
+        <div class="field-lg">
+            <label>¿A qué se dedica? *</label>
+            <input type="text" id="c_ocupacion" placeholder="Ej: Vendedor, Agricultor, Ama de casa..." required>
+        </div>
+
         <div class="field-lg">
             <label>Barrio / Sector *</label>
             <input type="text" id="c_barrio" placeholder="Barrio o sector" required>
         </div>
+
         <div class="field-lg">
             <label>Dirección *</label>
             <input type="text" id="c_direccion"
@@ -96,6 +116,45 @@ let mapaCli   = null;
 let markerCli = null;
 let autocompleteCli = null;
 
+// ── Solo números ──────────────────────────────────────────────
+function soloNumeros(input) {
+    input.value = input.value.replace(/\D/g, '');
+}
+
+// ── Validar teléfono en tiempo real ──────────────────────────
+function validarTelefono(input) {
+    const err = document.getElementById('err-telefono');
+    const val = input.value;
+    if (val.length > 0 && val.length !== 10) {
+        err.textContent = 'El teléfono debe tener exactamente 10 dígitos (' + val.length + '/10)';
+        err.style.display = 'block';
+        input.style.borderColor = '#ef4444';
+    } else {
+        err.style.display = 'none';
+        input.style.borderColor = '';
+    }
+}
+
+// ── Validar documento en tiempo real ─────────────────────────
+function validarDocumento(input) {
+    const err = document.getElementById('err-documento');
+    const val = input.value;
+    if (val.length > 0 && val.length < 6) {
+        err.textContent = 'El documento debe tener mínimo 6 dígitos (' + val.length + '/6)';
+        err.style.display = 'block';
+        input.style.borderColor = '#ef4444';
+    } else {
+        err.style.display = 'none';
+        input.style.borderColor = '';
+    }
+}
+
+// Escuchar cambios en documento del formulario
+document.addEventListener('DOMContentLoaded', function() {
+    const doc = document.getElementById('c_documento');
+    if (doc) doc.addEventListener('input', function() { soloNumeros(this); validarDocumento(this); });
+});
+
 function initMapaCliente() {
     if (mapaCli) return;
     const centro = { lat: 5.5353, lng: -73.3678 };
@@ -136,6 +195,7 @@ window.addEventListener('load', () => {
 async function buscarDocumento() {
     const doc = document.getElementById('input-documento').value.trim();
     if (!doc) { alert('Ingresa el número de documento'); return; }
+    if (doc.length < 6) { alert('Coloca un número de documento válido (mínimo 6 dígitos)'); return; }
 
     const resultado = document.getElementById('resultado-busqueda');
     resultado.innerHTML = '<div style="color:var(--muted);font-family:var(--font-mono);font-size:0.8rem">Consultando...</div>';
@@ -150,7 +210,6 @@ async function buscarDocumento() {
         }
 
         if (!data.existe) {
-            // No existe → habilitar formulario para crearlo
             resultado.innerHTML = `
                 <div style="padding:0.75rem;background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.3);border-radius:var(--radius);font-size:0.85rem;color:#22c55e;font-family:var(--font-mono)">
                     ✓ Documento no registrado — completa los datos para registrarlo
@@ -167,54 +226,33 @@ async function buscarDocumento() {
 
         const d = data.deudor;
 
-        // Es CLAVO
         if (d.comportamiento === 'clavo') {
             resultado.innerHTML = `
                 <div style="padding:1rem;background:rgba(239,68,68,.1);border:2px solid #ef4444;border-radius:var(--radius)">
-                    <div style="color:#ef4444;font-weight:700;font-size:1rem;margin-bottom:0.4rem">
-                        🚨 CLIENTE CLAVO
-                    </div>
+                    <div style="color:#ef4444;font-weight:700;font-size:1rem;margin-bottom:0.4rem">🚨 CLIENTE CLAVO</div>
                     <div style="font-weight:600;font-size:0.95rem">${d.nombre}</div>
-                    <div style="font-size:0.75rem;color:var(--muted);font-family:var(--font-mono);margin-top:2px">
-                        CC: ${d.documento}
-                    </div>
-                    <div style="font-size:0.82rem;color:#ef4444;margin-top:0.5rem">
-                        Este cliente tiene mal comportamiento de pago. No se puede crear préstamo.
-                    </div>
-                    <div style="font-size:0.75rem;color:var(--muted);margin-top:0.4rem;font-family:var(--font-mono)">
-                        ⚠ El administrador ha sido notificado de esta consulta.
-                    </div>
+                    <div style="font-size:0.75rem;color:var(--muted);font-family:var(--font-mono);margin-top:2px">CC: ${d.documento}</div>
+                    <div style="font-size:0.82rem;color:#ef4444;margin-top:0.5rem">Este cliente tiene mal comportamiento de pago. No se puede crear préstamo.</div>
+                    <div style="font-size:0.75rem;color:var(--muted);margin-top:0.4rem;font-family:var(--font-mono)">⚠ El administrador ha sido notificado de esta consulta.</div>
                 </div>`;
             document.getElementById('paso-formulario').style.display = 'none';
             return;
         }
 
-        // Existe y no es clavo — verificar si pertenece a este cobro o a otro
         if (!data.en_cobro_actual) {
-            const nombresAjenos = data.cobros_ajenos.length > 0
-                ? data.cobros_ajenos.join(', ')
-                : 'otro cobro';
+            const nombresAjenos = data.cobros_ajenos.length > 0 ? data.cobros_ajenos.join(', ') : 'otro cobro';
             resultado.innerHTML = `
                 <div style="padding:1rem;background:rgba(245,158,11,.1);border:2px solid #f59e0b;border-radius:var(--radius)">
-                    <div style="color:#f59e0b;font-weight:700;font-size:1rem;margin-bottom:0.4rem">
-                        ⚠ CLIENTE DE OTRO COBRO
-                    </div>
+                    <div style="color:#f59e0b;font-weight:700;font-size:1rem;margin-bottom:0.4rem">⚠ CLIENTE DE OTRO COBRO</div>
                     <div style="font-weight:600;font-size:0.95rem">${d.nombre}</div>
-                    <div style="font-size:0.75rem;color:var(--muted);font-family:var(--font-mono);margin-top:2px">
-                        CC: ${d.documento}
-                    </div>
-                    <div style="font-size:0.85rem;color:var(--text);margin-top:0.6rem">
-                        Este cliente ya está registrado en: <strong>${nombresAjenos}</strong>
-                    </div>
-                    <div style="font-size:0.75rem;color:var(--muted);margin-top:0.4rem;font-family:var(--font-mono)">
-                        Consulta con el administrador si necesitas agregarlo a este cobro.
-                    </div>
+                    <div style="font-size:0.75rem;color:var(--muted);font-family:var(--font-mono);margin-top:2px">CC: ${d.documento}</div>
+                    <div style="font-size:0.85rem;color:var(--text);margin-top:0.6rem">Este cliente ya está registrado en: <strong>${nombresAjenos}</strong></div>
+                    <div style="font-size:0.75rem;color:var(--muted);margin-top:0.4rem;font-family:var(--font-mono)">Consulta con el administrador si necesitas agregarlo a este cobro.</div>
                 </div>`;
             document.getElementById('paso-formulario').style.display = 'none';
             return;
         }
 
-        // Existe, no es clavo y pertenece a este cobro → cargar datos para editar
         const badgeColor = d.comportamiento === 'bueno' ? '#22c55e' : '#f59e0b';
         const badgeText  = d.comportamiento === 'bueno' ? 'Buen pagador' : 'Comportamiento regular';
 
@@ -225,17 +263,15 @@ async function buscarDocumento() {
                         <div style="font-weight:700">${d.nombre}</div>
                         <div style="font-size:0.72rem;color:var(--muted);font-family:var(--font-mono)">${d.telefono || '—'}</div>
                     </div>
-                    <span style="background:${badgeColor}22;color:${badgeColor};font-size:0.7rem;padding:3px 8px;border-radius:20px;font-family:var(--font-mono);font-weight:600">
-                        ${badgeText}
-                    </span>
+                    <span style="background:${badgeColor}22;color:${badgeColor};font-size:0.7rem;padding:3px 8px;border-radius:20px;font-family:var(--font-mono);font-weight:600">${badgeText}</span>
                 </div>
             </div>`;
 
-        // Cargar datos en el formulario
         document.getElementById('c_id').value        = d.id;
         document.getElementById('c_documento').value = d.documento || '';
         document.getElementById('c_nombre').value    = d.nombre    || '';
         document.getElementById('c_telefono').value  = d.telefono  || '';
+        document.getElementById('c_ocupacion').value = d.ocupacion || '';
         document.getElementById('c_barrio').value    = d.barrio    || '';
         document.getElementById('c_direccion').value = d.direccion || '';
         document.getElementById('c_lat').value       = d.lat       || '';
@@ -245,7 +281,6 @@ async function buscarDocumento() {
 
         document.getElementById('paso-formulario').style.display = 'block';
 
-        // Si tiene coordenadas, mostrar mapa
         if (d.lat && d.lng) {
             document.getElementById('mapa-cliente-wrap').style.display = 'block';
             setTimeout(() => {
@@ -274,6 +309,7 @@ async function guardarCliente() {
     const nombre    = document.getElementById('c_nombre').value.trim();
     const telefono  = document.getElementById('c_telefono').value.trim();
     const documento = document.getElementById('c_documento').value.trim();
+    const ocupacion = document.getElementById('c_ocupacion').value.trim();
     const barrio    = document.getElementById('c_barrio').value.trim();
     const direccion = document.getElementById('c_direccion').value.trim();
     const lat       = document.getElementById('c_lat').value;
@@ -281,15 +317,18 @@ async function guardarCliente() {
     const id        = document.getElementById('c_id').value;
 
     const errores = [];
-    if (!nombre)    errores.push('Nombre completo');
-    if (!telefono)  errores.push('Teléfono');
-    if (!documento) errores.push('Documento');
-    if (!barrio)    errores.push('Barrio / Sector');
-    if (!direccion) errores.push('Dirección');
-    if (!lat || !lng) errores.push('Ubicación en el mapa');
+    if (!nombre)                errores.push('Nombre completo');
+    if (!telefono)              errores.push('Teléfono');
+    else if (telefono.length !== 10) errores.push('El teléfono debe tener exactamente 10 dígitos');
+    if (!documento)             errores.push('Documento');
+    else if (documento.length < 6)   errores.push('El documento debe tener mínimo 6 dígitos');
+    if (!ocupacion)             errores.push('¿A qué se dedica?');
+    if (!barrio)                errores.push('Barrio / Sector');
+    if (!direccion)             errores.push('Dirección');
+    if (!lat || !lng)           errores.push('Ubicación en el mapa');
 
     if (errores.length > 0) {
-        alert('Faltan campos obligatorios:\n\n• ' + errores.join('\n• '));
+        alert('Faltan campos o hay errores:\n\n• ' + errores.join('\n• '));
         return;
     }
 
@@ -304,7 +343,7 @@ async function guardarCliente() {
             body   : JSON.stringify({
                 action        : 'guardar',
                 id            : id || undefined,
-                nombre, telefono, documento, barrio, direccion,
+                nombre, telefono, documento, ocupacion, barrio, direccion,
                 lat, lng,
                 place_id      : document.getElementById('c_place_id').value,
                 notas         : document.getElementById('c_notas').value.trim(),

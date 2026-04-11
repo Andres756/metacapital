@@ -21,15 +21,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
     if ($action === 'cuotas') {
         if (!$prestamoId) { echo json_encode(['ok'=>false,'msg'=>'Falta prestamo_id']); exit; }
 
-        $check = $db->prepare("SELECT id FROM prestamos WHERE id=? AND cobro_id=?");
-        $check->execute([$prestamoId, $cobro]);
-        if (!$check->fetch()) { echo json_encode(['ok'=>false,'msg'=>'Préstamo no encontrado']); exit; }
-
+        // Sin filtro de cobro_id — el admin puede ver cuotas de cualquier préstamo
         $stmt = $db->prepare("
-            SELECT id, numero_cuota, fecha_vencimiento, monto_cuota, monto_pagado, saldo_cuota, estado
-            FROM cuotas
-            WHERE prestamo_id=? AND estado IN ('pendiente','parcial')
-            ORDER BY numero_cuota ASC
+            SELECT c.id, c.numero_cuota, c.fecha_vencimiento,
+                   c.monto_cuota, c.monto_pagado, c.saldo_cuota, c.estado
+            FROM cuotas c
+            JOIN prestamos p ON p.id = c.prestamo_id
+            WHERE c.prestamo_id=? AND c.estado IN ('pendiente','parcial')
+            ORDER BY c.numero_cuota ASC
         ");
         $stmt->execute([$prestamoId]);
         echo json_encode(['ok'=>true, 'cuotas'=>$stmt->fetchAll()]);
@@ -38,16 +37,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
 
     // ── Resumen del día ───────────────────────────────────────
     if ($action === 'resumen_dia') {
-        $fecha = $_GET['fecha'] ?? date('Y-m-d');
-        $stmt  = $db->prepare("
+        $fecha     = $_GET['fecha'] ?? date('Y-m-d');
+        $cobroFiltro = (int)($_GET['cobro_id'] ?? 0) ?: $cobro;
+
+        $stmt = $db->prepare("
             SELECT pg.*, d.nombre AS deudor, cu.numero_cuota
             FROM pagos pg
             JOIN deudores d ON d.id = pg.deudor_id
             JOIN cuotas cu  ON cu.id = pg.cuota_id
-            WHERE pg.cobro_id=? AND pg.fecha_pago=? AND (pg.anulado=0 OR pg.anulado IS NULL)
+            WHERE pg.cobro_id=? AND pg.fecha_pago=?
+              AND (pg.anulado=0 OR pg.anulado IS NULL)
             ORDER BY pg.created_at DESC
         ");
-        $stmt->execute([$cobro, $fecha]);
+        $stmt->execute([$cobroFiltro, $fecha]);
         $pagos = $stmt->fetchAll();
         $total = array_sum(array_column($pagos, 'monto_pagado'));
         echo json_encode(['ok'=>true, 'pagos'=>$pagos, 'total'=>$total]);
@@ -74,11 +76,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         try {
             $db->beginTransaction();
 
-            $stmtP = $db->prepare("SELECT * FROM pagos WHERE id=? AND cobro_id=?");
-            $stmtP->execute([$pago_id, $cobro]);
+            // Sin filtro de cobro — el admin puede anular pagos de cualquier cobro
+            $stmtP = $db->prepare("SELECT * FROM pagos WHERE id=?");
+            $stmtP->execute([$pago_id]);
             $pago = $stmtP->fetch();
             if (!$pago) { echo json_encode(['ok'=>false,'msg'=>'Pago no encontrado']); exit; }
             if ($pago['anulado']) { echo json_encode(['ok'=>false,'msg'=>'El pago ya está anulado']); exit; }
+
+            // Verificar que el usuario tiene acceso al cobro de ese pago
+            if ($_SESSION['rol'] !== 'superadmin') {
+                $chk = $db->prepare("SELECT 1 FROM usuario_cobro WHERE usuario_id=? AND cobro_id=?");
+                $chk->execute([$_SESSION['usuario_id'], $pago['cobro_id']]);
+                if (!$chk->fetch()) {
+                    echo json_encode(['ok'=>false,'msg'=>'Sin acceso a este cobro']); exit;
+                }
+            }
 
             // 1. Anular el pago
             $db->prepare("UPDATE pagos SET anulado=1, anulado_at=NOW(), anulado_por=? WHERE id=?")
@@ -110,21 +122,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                    $pago['cuota_id']
                ]);
 
-            // 3. Anular movimiento de capital vinculado por pago_id
+            // 3. Anular movimiento de capital vinculado
             $db->prepare("UPDATE capital_movimientos
                 SET anulado=1, anulado_at=NOW(), anulado_por=?
                 WHERE pago_id=? AND cobro_id=?")
-               ->execute([$_SESSION['usuario_id'], $pago_id, $cobro]);
+               ->execute([$_SESSION['usuario_id'], $pago_id, $pago['cobro_id']]);
 
             // 4. Recalcular saldo del préstamo
             $stmtSaldo = $db->prepare("
                 SELECT COALESCE(SUM(saldo_cuota), 0)
-                FROM cuotas
-                WHERE prestamo_id=? AND estado NOT IN ('anulado')
+                FROM cuotas WHERE prestamo_id=? AND estado NOT IN ('anulado')
             ");
             $stmtSaldo->execute([$pago['prestamo_id']]);
             $nuevo_saldo = (float)$stmtSaldo->fetchColumn();
-
             $nuevo_estado = $nuevo_saldo <= 0
                 ? 'pagado'
                 : actualizarEstadoMora($db, $pago['prestamo_id']);
@@ -148,9 +158,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
 echo json_encode(['ok'=>false,'msg'=>'Método no permitido']);
 
-// ============================================================
-// HELPER — mora (duplicado aquí para no depender de prestamos.php)
-// ============================================================
 function actualizarEstadoMora(PDO $db, int $prestamo_id): string {
     $stmt = $db->prepare("SELECT MIN(fecha_vencimiento) FROM cuotas WHERE prestamo_id=? AND estado IN ('pendiente','parcial')");
     $stmt->execute([$prestamo_id]);
